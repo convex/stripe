@@ -2,6 +2,52 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  products: defineTable({
+    stripeProductId: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    active: v.boolean(),
+    type: v.optional(v.string()), // "service" | "good"
+    defaultPriceId: v.optional(v.string()),
+    metadata: v.optional(v.any()),
+    images: v.optional(v.array(v.string())),
+  })
+    .index("by_stripe_product_id", ["stripeProductId"])
+    .index("by_active", ["active"]),
+
+  prices: defineTable({
+    stripePriceId: v.string(),
+    stripeProductId: v.string(),
+    active: v.boolean(),
+    currency: v.string(),
+    type: v.string(), // "one_time" | "recurring"
+    unitAmount: v.optional(v.number()), // in cents
+    description: v.optional(v.string()),
+    lookupKey: v.optional(v.string()),
+    // Recurring-specific fields
+    recurringInterval: v.optional(v.string()), // "day" | "week" | "month" | "year"
+    recurringIntervalCount: v.optional(v.number()),
+    trialPeriodDays: v.optional(v.number()),
+    usageType: v.optional(v.string()), // "licensed" | "metered"
+    // Tiered pricing fields
+    billingScheme: v.optional(v.string()), // "per_unit" | "tiered"
+    tiersMode: v.optional(v.string()), // "graduated" | "volume"
+    tiers: v.optional(
+      v.array(
+        v.object({
+          upTo: v.union(v.number(), v.null()), // null means infinity (last tier)
+          flatAmount: v.optional(v.number()),
+          unitAmount: v.optional(v.number()),
+        }),
+      ),
+    ),
+    metadata: v.optional(v.any()),
+  })
+    .index("by_stripe_price_id", ["stripePriceId"])
+    .index("by_stripe_product_id", ["stripeProductId"])
+    .index("by_active", ["active"])
+    .index("by_lookup_key", ["lookupKey"]),
+
   customers: defineTable({
     stripeCustomerId: v.string(),
     email: v.optional(v.string()),

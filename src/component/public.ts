@@ -7,6 +7,8 @@ import schema from "./schema.js";
 // ============================================================================
 
 // Reusable validators that omit system fields (_id, _creationTime)
+const productValidator = schema.tables.products.validator;
+const priceValidator = schema.tables.prices.validator;
 const customerValidator = schema.tables.customers.validator;
 const subscriptionValidator = schema.tables.subscriptions.validator;
 const checkoutSessionValidator = schema.tables.checkout_sessions.validator;
@@ -15,6 +17,199 @@ const invoiceValidator = schema.tables.invoices.validator;
 
 // ============================================================================
 // PUBLIC QUERIES
+// ============================================================================
+
+// ============================================================================
+// PRODUCTS
+// ============================================================================
+
+/**
+ * Get a product by its Stripe product ID.
+ */
+export const getProduct = query({
+  args: { stripeProductId: v.string() },
+  returns: v.union(productValidator, v.null()),
+  handler: async (ctx, args) => {
+    const product = await ctx.db
+      .query("products")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .unique();
+    if (!product) return null;
+    const { _id, _creationTime, ...data } = product;
+    return data;
+  },
+});
+
+/**
+ * List all products.
+ */
+export const listProducts = query({
+  args: {},
+  returns: v.array(productValidator),
+  handler: async (ctx) => {
+    const products = await ctx.db.query("products").collect();
+    return products.map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+/**
+ * List all active products.
+ */
+export const listActiveProducts = query({
+  args: {},
+  returns: v.array(productValidator),
+  handler: async (ctx) => {
+    const products = await ctx.db
+      .query("products")
+      .withIndex("by_active", (q) => q.eq("active", true))
+      .collect();
+    return products.map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+// ============================================================================
+// PRICES
+// ============================================================================
+
+/**
+ * Get a price by its Stripe price ID.
+ */
+export const getPrice = query({
+  args: { stripePriceId: v.string() },
+  returns: v.union(priceValidator, v.null()),
+  handler: async (ctx, args) => {
+    const price = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_price_id", (q) =>
+        q.eq("stripePriceId", args.stripePriceId),
+      )
+      .unique();
+    if (!price) return null;
+    const { _id, _creationTime, ...data } = price;
+    return data;
+  },
+});
+
+/**
+ * List all prices.
+ */
+export const listPrices = query({
+  args: {},
+  returns: v.array(priceValidator),
+  handler: async (ctx) => {
+    const prices = await ctx.db.query("prices").collect();
+    return prices.map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+/**
+ * List all active prices.
+ */
+export const listActivePrices = query({
+  args: {},
+  returns: v.array(priceValidator),
+  handler: async (ctx) => {
+    const prices = await ctx.db
+      .query("prices")
+      .withIndex("by_active", (q) => q.eq("active", true))
+      .collect();
+    return prices.map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+/**
+ * List all prices for a product.
+ */
+export const listPricesByProduct = query({
+  args: { stripeProductId: v.string() },
+  returns: v.array(priceValidator),
+  handler: async (ctx, args) => {
+    const prices = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .collect();
+    return prices.map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+/**
+ * List all active prices for a product.
+ */
+export const listActivePricesByProduct = query({
+  args: { stripeProductId: v.string() },
+  returns: v.array(priceValidator),
+  handler: async (ctx, args) => {
+    const prices = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .collect();
+    return prices
+      .filter((price) => price.active)
+      .map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+/**
+ * Get a price by its lookup key.
+ */
+export const getPriceByLookupKey = query({
+  args: { lookupKey: v.string() },
+  returns: v.union(priceValidator, v.null()),
+  handler: async (ctx, args) => {
+    const price = await ctx.db
+      .query("prices")
+      .withIndex("by_lookup_key", (q) => q.eq("lookupKey", args.lookupKey))
+      .unique();
+    if (!price) return null;
+    const { _id, _creationTime, ...data } = price;
+    return data;
+  },
+});
+
+/**
+ * Get a product with all its prices.
+ */
+export const getProductWithPrices = query({
+  args: { stripeProductId: v.string() },
+  returns: v.union(
+    v.object({
+      product: productValidator,
+      prices: v.array(priceValidator),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const product = await ctx.db
+      .query("products")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .unique();
+    if (!product) return null;
+
+    const prices = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .collect();
+
+    const { _id, _creationTime, ...productData } = product;
+    return {
+      product: productData,
+      prices: prices.map(({ _id, _creationTime, ...data }) => data),
+    };
+  },
+});
+
+// ============================================================================
+// CUSTOMERS
 // ============================================================================
 
 /**

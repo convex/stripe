@@ -406,8 +406,101 @@ export class StripeSubscriptions {
   }
 
   // ============================================================================
-  // WEBHOOK REGISTRATION
+  // SYNC METHODS
   // ============================================================================
+
+  /**
+   * Sync all products from Stripe to the local database.
+   * Useful for initial setup or recovery after missed webhooks.
+   *
+   * @returns The number of products synced
+   */
+  async syncProducts(ctx: ActionCtx): Promise<{ synced: number }> {
+    const stripe = new StripeSDK(this.apiKey);
+    let synced = 0;
+
+    // Fetch all products from Stripe (handles pagination automatically)
+    for await (const product of stripe.products.list({ limit: 100 })) {
+      await ctx.runMutation(this.component.private.handleProductUpdated, {
+        stripeProductId: product.id,
+        name: product.name,
+        description: product.description || undefined,
+        active: product.active,
+        type: product.type,
+        defaultPriceId:
+          typeof product.default_price === "string"
+            ? product.default_price
+            : product.default_price?.id,
+        metadata: product.metadata,
+        images: product.images,
+      });
+      synced++;
+    }
+
+    return { synced };
+  }
+
+  /**
+   * Sync all prices from Stripe to the local database.
+   * Useful for initial setup or recovery after missed webhooks.
+   *
+   * @returns The number of prices synced
+   */
+  async syncPrices(ctx: ActionCtx): Promise<{ synced: number }> {
+    const stripe = new StripeSDK(this.apiKey);
+    let synced = 0;
+
+    // Fetch all prices from Stripe with tiers expanded (handles pagination automatically)
+    for await (const price of stripe.prices.list({
+      limit: 100,
+      expand: ["data.tiers"],
+    })) {
+      await ctx.runMutation(this.component.private.handlePriceUpdated, {
+        stripePriceId: price.id,
+        stripeProductId:
+          typeof price.product === "string" ? price.product : price.product.id,
+        active: price.active,
+        currency: price.currency,
+        type: price.type,
+        unitAmount: price.unit_amount ?? undefined,
+        description: price.nickname || undefined,
+        lookupKey: price.lookup_key || undefined,
+        recurringInterval: price.recurring?.interval,
+        recurringIntervalCount: price.recurring?.interval_count,
+        trialPeriodDays: price.recurring?.trial_period_days ?? undefined,
+        usageType: price.recurring?.usage_type,
+        billingScheme: price.billing_scheme,
+        tiersMode: price.tiers_mode ?? undefined,
+        tiers: price.tiers?.map((tier) => ({
+          upTo: tier.up_to,
+          flatAmount: tier.flat_amount ?? undefined,
+          unitAmount: tier.unit_amount ?? undefined,
+        })),
+        metadata: price.metadata,
+      });
+      synced++;
+    }
+
+    return { synced };
+  }
+
+  /**
+   * Sync all products and prices from Stripe to the local database.
+   * Products are synced first, then prices.
+   *
+   * @returns The number of products and prices synced
+   */
+  async syncProductsAndPrices(
+    ctx: ActionCtx,
+  ): Promise<{ products: number; prices: number }> {
+    const productsResult = await this.syncProducts(ctx);
+    const pricesResult = await this.syncPrices(ctx);
+
+    return {
+      products: productsResult.synced,
+      prices: pricesResult.synced,
+    };
+  }
 }
 /**
  * Register webhook routes with the HTTP router.
@@ -538,6 +631,123 @@ export async function processEvent(
   stripe: StripeSDK,
 ): Promise<void> {
   switch (event.type) {
+    // ========================================================================
+    // PRODUCTS
+    // ========================================================================
+    case "product.created": {
+      const product = event.data.object as StripeSDK.Product;
+      await ctx.runMutation(component.private.handleProductCreated, {
+        stripeProductId: product.id,
+        name: product.name,
+        description: product.description || undefined,
+        active: product.active,
+        type: product.type,
+        defaultPriceId:
+          typeof product.default_price === "string"
+            ? product.default_price
+            : product.default_price?.id,
+        metadata: product.metadata,
+        images: product.images,
+      });
+      break;
+    }
+
+    case "product.updated": {
+      const product = event.data.object as StripeSDK.Product;
+      await ctx.runMutation(component.private.handleProductUpdated, {
+        stripeProductId: product.id,
+        name: product.name,
+        description: product.description || undefined,
+        active: product.active,
+        type: product.type,
+        defaultPriceId:
+          typeof product.default_price === "string"
+            ? product.default_price
+            : product.default_price?.id,
+        metadata: product.metadata,
+        images: product.images,
+      });
+      break;
+    }
+
+    case "product.deleted": {
+      const product = event.data.object as StripeSDK.Product;
+      await ctx.runMutation(component.private.handleProductDeleted, {
+        stripeProductId: product.id,
+      });
+      break;
+    }
+
+    // ========================================================================
+    // PRICES
+    // ========================================================================
+    case "price.created": {
+      const price = event.data.object as StripeSDK.Price;
+      await ctx.runMutation(component.private.handlePriceCreated, {
+        stripePriceId: price.id,
+        stripeProductId:
+          typeof price.product === "string" ? price.product : price.product.id,
+        active: price.active,
+        currency: price.currency,
+        type: price.type,
+        unitAmount: price.unit_amount ?? undefined,
+        description: price.nickname || undefined,
+        lookupKey: price.lookup_key || undefined,
+        recurringInterval: price.recurring?.interval,
+        recurringIntervalCount: price.recurring?.interval_count,
+        trialPeriodDays: price.recurring?.trial_period_days ?? undefined,
+        usageType: price.recurring?.usage_type,
+        billingScheme: price.billing_scheme,
+        tiersMode: price.tiers_mode ?? undefined,
+        tiers: price.tiers?.map((tier) => ({
+          upTo: tier.up_to,
+          flatAmount: tier.flat_amount ?? undefined,
+          unitAmount: tier.unit_amount ?? undefined,
+        })),
+        metadata: price.metadata,
+      });
+      break;
+    }
+
+    case "price.updated": {
+      const price = event.data.object as StripeSDK.Price;
+      await ctx.runMutation(component.private.handlePriceUpdated, {
+        stripePriceId: price.id,
+        stripeProductId:
+          typeof price.product === "string" ? price.product : price.product.id,
+        active: price.active,
+        currency: price.currency,
+        type: price.type,
+        unitAmount: price.unit_amount ?? undefined,
+        description: price.nickname || undefined,
+        lookupKey: price.lookup_key || undefined,
+        recurringInterval: price.recurring?.interval,
+        recurringIntervalCount: price.recurring?.interval_count,
+        trialPeriodDays: price.recurring?.trial_period_days ?? undefined,
+        usageType: price.recurring?.usage_type,
+        billingScheme: price.billing_scheme,
+        tiersMode: price.tiers_mode ?? undefined,
+        tiers: price.tiers?.map((tier) => ({
+          upTo: tier.up_to,
+          flatAmount: tier.flat_amount ?? undefined,
+          unitAmount: tier.unit_amount ?? undefined,
+        })),
+        metadata: price.metadata,
+      });
+      break;
+    }
+
+    case "price.deleted": {
+      const price = event.data.object as StripeSDK.Price;
+      await ctx.runMutation(component.private.handlePriceDeleted, {
+        stripePriceId: price.id,
+      });
+      break;
+    }
+
+    // ========================================================================
+    // CUSTOMERS
+    // ========================================================================
     case "customer.created":
     case "customer.updated": {
       const customer = event.data.object as StripeSDK.Customer;
