@@ -814,3 +814,85 @@ test("handlePaymentIntentSucceeded updates existing payment with customer", asyn
 
   expect(payment?.stripeCustomerId).toBe("cus_idempotent");
 });
+
+test("a stale subscription update cannot resurrect a cancelled subscription", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_reorder",
+    email: "reorder@example.com",
+  });
+
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId: "sub_reorder",
+    stripeCustomerId: "cus_reorder",
+    status: "active",
+    currentPeriodEnd: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_reorder",
+  });
+
+  await t.mutation(api.private.handleSubscriptionDeleted, {
+    stripeSubscriptionId: "sub_reorder",
+  });
+
+  // Stripe does not guarantee webhook ordering and retries failed deliveries
+  // for up to three days, so an older `customer.subscription.updated` can be
+  // delivered after `customer.subscription.deleted`. Applying it would restore
+  // access to somebody who has cancelled.
+  await t.mutation(api.private.handleSubscriptionUpdated, {
+    stripeSubscriptionId: "sub_reorder",
+    stripeCustomerId: "cus_reorder",
+    status: "active",
+    currentPeriodEnd: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_reorder",
+  });
+
+  const subscription = await t.query(api.public.getSubscription, {
+    stripeSubscriptionId: "sub_reorder",
+  });
+
+  expect(subscription?.status).toBe("canceled");
+});
+
+test("a cancelled subscription still accepts a canceled update", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_recancel",
+    email: "recancel@example.com",
+  });
+
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId: "sub_recancel",
+    stripeCustomerId: "cus_recancel",
+    status: "active",
+    currentPeriodEnd: Date.now(),
+    cancelAtPeriodEnd: false,
+    priceId: "price_recancel",
+  });
+
+  await t.mutation(api.private.handleSubscriptionDeleted, {
+    stripeSubscriptionId: "sub_recancel",
+  });
+
+  // The guard is on resurrection only: a redelivered `canceled` update must
+  // still be able to refresh the row's other fields.
+  await t.mutation(api.private.handleSubscriptionUpdated, {
+    stripeSubscriptionId: "sub_recancel",
+    stripeCustomerId: "cus_recancel",
+    status: "canceled",
+    currentPeriodEnd: Date.now(),
+    cancelAtPeriodEnd: true,
+    quantity: 3,
+    priceId: "price_recancel",
+  });
+
+  const subscription = await t.query(api.public.getSubscription, {
+    stripeSubscriptionId: "sub_recancel",
+  });
+
+  expect(subscription?.status).toBe("canceled");
+  expect(subscription?.quantity).toBe(3);
+});
