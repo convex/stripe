@@ -104,7 +104,7 @@ export const handleProductUpdated = mutation({
       .unique();
 
     if (product) {
-      await ctx.db.patch(product._id, {
+      await ctx.db.patch("products", product._id, {
         name: args.name,
         description: args.description,
         active: args.active,
@@ -145,7 +145,7 @@ export const handleProductDeleted = mutation({
       .unique();
 
     if (product) {
-      await ctx.db.patch(product._id, {
+      await ctx.db.patch("products", product._id, {
         active: false,
       });
     }
@@ -240,7 +240,7 @@ export const handlePriceUpdated = mutation({
       .unique();
 
     if (price) {
-      await ctx.db.patch(price._id, {
+      await ctx.db.patch("prices", price._id, {
         stripeProductId: args.stripeProductId,
         active: args.active,
         currency: args.currency,
@@ -297,7 +297,7 @@ export const handlePriceDeleted = mutation({
       .unique();
 
     if (price) {
-      await ctx.db.patch(price._id, {
+      await ctx.db.patch("prices", price._id, {
         active: false,
       });
     }
