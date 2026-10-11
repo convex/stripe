@@ -112,6 +112,108 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      handlePriceCreated: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        },
+        null,
+        Name
+      >;
+      handlePriceDeleted: FunctionReference<
+        "mutation",
+        "internal",
+        { stripePriceId: string },
+        null,
+        Name
+      >;
+      handlePriceUpdated: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        },
+        null,
+        Name
+      >;
+      handleProductCreated: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          active: boolean;
+          defaultPriceId?: string;
+          description?: string;
+          images?: Array<string>;
+          metadata?: any;
+          name: string;
+          stripeProductId: string;
+          type?: string;
+        },
+        null,
+        Name
+      >;
+      handleProductDeleted: FunctionReference<
+        "mutation",
+        "internal",
+        { stripeProductId: string },
+        null,
+        Name
+      >;
+      handleProductUpdated: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          active: boolean;
+          defaultPriceId?: string;
+          description?: string;
+          images?: Array<string>;
+          metadata?: any;
+          name: string;
+          stripeProductId: string;
+          type?: string;
+        },
+        null,
+        Name
+      >;
       handleSubscriptionCreated: FunctionReference<
         "mutation",
         "internal",
@@ -267,6 +369,118 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         } | null,
         Name
       >;
+      getPrice: FunctionReference<
+        "query",
+        "internal",
+        { stripePriceId: string },
+        {
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        } | null,
+        Name
+      >;
+      getPriceByLookupKey: FunctionReference<
+        "query",
+        "internal",
+        { lookupKey: string },
+        {
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        } | null,
+        Name
+      >;
+      getProduct: FunctionReference<
+        "query",
+        "internal",
+        { stripeProductId: string },
+        {
+          active: boolean;
+          defaultPriceId?: string;
+          description?: string;
+          images?: Array<string>;
+          metadata?: any;
+          name: string;
+          stripeProductId: string;
+          type?: string;
+        } | null,
+        Name
+      >;
+      getProductWithPrices: FunctionReference<
+        "query",
+        "internal",
+        { stripeProductId: string },
+        {
+          prices: Array<{
+            active: boolean;
+            billingScheme?: string;
+            currency: string;
+            description?: string;
+            lookupKey?: string;
+            metadata?: any;
+            recurringInterval?: string;
+            recurringIntervalCount?: number;
+            stripePriceId: string;
+            stripeProductId: string;
+            tiers?: Array<{
+              flatAmount?: number;
+              unitAmount?: number;
+              upTo: number | null;
+            }>;
+            tiersMode?: string;
+            trialPeriodDays?: number;
+            type: string;
+            unitAmount?: number;
+            usageType?: string;
+          }>;
+          product: {
+            active: boolean;
+            defaultPriceId?: string;
+            description?: string;
+            images?: Array<string>;
+            metadata?: any;
+            name: string;
+            stripeProductId: string;
+            type?: string;
+          };
+        } | null,
+        Name
+      >;
       getSubscription: FunctionReference<
         "query",
         "internal",
@@ -303,6 +517,78 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           stripeSubscriptionId: string;
           userId?: string;
         } | null,
+        Name
+      >;
+      listActivePrices: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        }>,
+        Name
+      >;
+      listActivePricesByProduct: FunctionReference<
+        "query",
+        "internal",
+        { stripeProductId: string },
+        Array<{
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        }>,
+        Name
+      >;
+      listActiveProducts: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          active: boolean;
+          defaultPriceId?: string;
+          description?: string;
+          images?: Array<string>;
+          metadata?: any;
+          name: string;
+          stripeProductId: string;
+          type?: string;
+        }>,
         Name
       >;
       listCheckoutSessions: FunctionReference<
@@ -420,6 +706,78 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           stripeCustomerId?: string;
           stripePaymentIntentId: string;
           userId?: string;
+        }>,
+        Name
+      >;
+      listPrices: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        }>,
+        Name
+      >;
+      listPricesByProduct: FunctionReference<
+        "query",
+        "internal",
+        { stripeProductId: string },
+        Array<{
+          active: boolean;
+          billingScheme?: string;
+          currency: string;
+          description?: string;
+          lookupKey?: string;
+          metadata?: any;
+          recurringInterval?: string;
+          recurringIntervalCount?: number;
+          stripePriceId: string;
+          stripeProductId: string;
+          tiers?: Array<{
+            flatAmount?: number;
+            unitAmount?: number;
+            upTo: number | null;
+          }>;
+          tiersMode?: string;
+          trialPeriodDays?: number;
+          type: string;
+          unitAmount?: number;
+          usageType?: string;
+        }>,
+        Name
+      >;
+      listProducts: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          active: boolean;
+          defaultPriceId?: string;
+          description?: string;
+          images?: Array<string>;
+          metadata?: any;
+          name: string;
+          stripeProductId: string;
+          type?: string;
         }>,
         Name
       >;
