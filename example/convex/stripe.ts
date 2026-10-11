@@ -24,6 +24,218 @@ function getAppUrl(): string {
 }
 
 // ============================================================================
+// PRODUCTS & PRICES
+// ============================================================================
+
+// Shared validators for products and prices
+const productFields = {
+  stripeProductId: v.string(),
+  name: v.string(),
+  description: v.optional(v.string()),
+  active: v.boolean(),
+  type: v.optional(v.string()),
+  defaultPriceId: v.optional(v.string()),
+  metadata: v.optional(v.any()),
+  images: v.optional(v.array(v.string())),
+};
+
+const priceFields = {
+  stripePriceId: v.string(),
+  stripeProductId: v.string(),
+  active: v.boolean(),
+  currency: v.string(),
+  type: v.string(),
+  unitAmount: v.optional(v.number()),
+  description: v.optional(v.string()),
+  lookupKey: v.optional(v.string()),
+  recurringInterval: v.optional(v.string()),
+  recurringIntervalCount: v.optional(v.number()),
+  trialPeriodDays: v.optional(v.number()),
+  usageType: v.optional(v.string()),
+  billingScheme: v.optional(v.string()),
+  tiersMode: v.optional(v.string()),
+  tiers: v.optional(
+    v.array(
+      v.object({
+        upTo: v.union(v.number(), v.null()),
+        flatAmount: v.optional(v.number()),
+        unitAmount: v.optional(v.number()),
+      }),
+    ),
+  ),
+  metadata: v.optional(v.any()),
+};
+
+/**
+ * Get a product by its Stripe product ID.
+ */
+export const getProduct = query({
+  args: { stripeProductId: v.string() },
+  returns: v.union(v.object(productFields), v.null()),
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.stripe.public.getProduct, {
+      stripeProductId: args.stripeProductId,
+    });
+  },
+});
+
+/**
+ * List all products.
+ */
+export const listProducts = query({
+  args: {},
+  returns: v.array(v.object(productFields)),
+  handler: async (ctx) => {
+    return await ctx.runQuery(components.stripe.public.listProducts, {});
+  },
+});
+
+/**
+ * List all active products.
+ */
+export const listActiveProducts = query({
+  args: {},
+  returns: v.array(v.object(productFields)),
+  handler: async (ctx) => {
+    return await ctx.runQuery(components.stripe.public.listActiveProducts, {});
+  },
+});
+
+/**
+ * Get a price by its Stripe price ID.
+ */
+export const getPrice = query({
+  args: { stripePriceId: v.string() },
+  returns: v.union(v.object(priceFields), v.null()),
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.stripe.public.getPrice, {
+      stripePriceId: args.stripePriceId,
+    });
+  },
+});
+
+/**
+ * Get a price by its lookup key.
+ */
+export const getPriceByLookupKey = query({
+  args: { lookupKey: v.string() },
+  returns: v.union(v.object(priceFields), v.null()),
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.stripe.public.getPriceByLookupKey, {
+      lookupKey: args.lookupKey,
+    });
+  },
+});
+
+/**
+ * List all prices.
+ */
+export const listPrices = query({
+  args: {},
+  returns: v.array(v.object(priceFields)),
+  handler: async (ctx) => {
+    return await ctx.runQuery(components.stripe.public.listPrices, {});
+  },
+});
+
+/**
+ * List all active prices.
+ */
+export const listActivePrices = query({
+  args: {},
+  returns: v.array(v.object(priceFields)),
+  handler: async (ctx) => {
+    return await ctx.runQuery(components.stripe.public.listActivePrices, {});
+  },
+});
+
+/**
+ * List all prices for a specific product.
+ */
+export const listPricesByProduct = query({
+  args: { stripeProductId: v.string() },
+  returns: v.array(v.object(priceFields)),
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.stripe.public.listPricesByProduct, {
+      stripeProductId: args.stripeProductId,
+    });
+  },
+});
+
+/**
+ * List all active prices for a specific product.
+ */
+export const listActivePricesByProduct = query({
+  args: { stripeProductId: v.string() },
+  returns: v.array(v.object(priceFields)),
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(
+      components.stripe.public.listActivePricesByProduct,
+      { stripeProductId: args.stripeProductId },
+    );
+  },
+});
+
+/**
+ * Get a product with all its prices.
+ */
+export const getProductWithPrices = query({
+  args: { stripeProductId: v.string() },
+  returns: v.union(
+    v.object({
+      product: v.object(productFields),
+      prices: v.array(v.object(priceFields)),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.stripe.public.getProductWithPrices, {
+      stripeProductId: args.stripeProductId,
+    });
+  },
+});
+
+// ============================================================================
+// SYNC ACTIONS
+// ============================================================================
+
+/**
+ * Sync all products from Stripe to the local database.
+ * Useful for initial setup or populating existing products.
+ */
+export const syncProducts = action({
+  args: {},
+  returns: v.object({ synced: v.number() }),
+  handler: async (ctx) => {
+    return await stripeClient.syncProducts(ctx);
+  },
+});
+
+/**
+ * Sync all prices from Stripe to the local database.
+ * Useful for initial setup or populating existing prices.
+ */
+export const syncPrices = action({
+  args: {},
+  returns: v.object({ synced: v.number() }),
+  handler: async (ctx) => {
+    return await stripeClient.syncPrices(ctx);
+  },
+});
+
+/**
+ * Sync all products and prices from Stripe to the local database.
+ * Products are synced first, then prices.
+ */
+export const syncProductsAndPrices = action({
+  args: {},
+  returns: v.object({ products: v.number(), prices: v.number() }),
+  handler: async (ctx) => {
+    return await stripeClient.syncProductsAndPrices(ctx);
+  },
+});
+
+// ============================================================================
 // CUSTOMER MANAGEMENT (Customer Creation)
 // ============================================================================
 

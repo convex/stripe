@@ -9,6 +9,50 @@ const http = httpRouter();
 registerRoutes(http, components.stripe, {
   webhookPath: "/stripe/webhook",
   events: {
+    "product.created": async (ctx, event) => {
+      const product = event.data.object;
+      console.log("📦 Custom handler: Product created!", {
+        id: product.id,
+        name: product.name,
+        active: product.active,
+      });
+    },
+    "product.updated": async (ctx, event) => {
+      const product = event.data.object;
+      console.log("📦 Custom handler: Product updated!", {
+        id: product.id,
+        name: product.name,
+        active: product.active,
+      });
+    },
+    "product.deleted": async (ctx, event) => {
+      const product = event.data.object;
+      console.log("📦 Custom handler: Product deleted!", {
+        id: product.id,
+      });
+    },
+    "price.created": async (ctx, event) => {
+      const price = event.data.object;
+      console.log("💵 Custom handler: Price created!", {
+        id: price.id,
+        product: price.product,
+        unitAmount: price.unit_amount,
+        currency: price.currency,
+      });
+    },
+    "price.updated": async (ctx, event) => {
+      const price = event.data.object;
+      console.log("💵 Custom handler: Price updated!", {
+        id: price.id,
+        active: price.active,
+      });
+    },
+    "price.deleted": async (ctx, event) => {
+      const price = event.data.object;
+      console.log("💵 Custom handler: Price deleted!", {
+        id: price.id,
+      });
+    },
     "customer.subscription.updated": async (ctx, event) => {
       // Example custom handler: Log subscription updates
       const subscription = event.data.object;

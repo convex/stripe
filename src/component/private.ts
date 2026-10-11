@@ -31,9 +31,280 @@ export const listSubscriptionsWithCreationTime = query({
   },
 });
 
+// Validator for price tiers
+const tierValidator = v.object({
+  upTo: v.union(v.number(), v.null()),
+  flatAmount: v.optional(v.number()),
+  unitAmount: v.optional(v.number()),
+});
+
 // ============================================================================
 // INTERNAL MUTATIONS (for webhooks and internal use)
 // ============================================================================
+
+// ============================================================================
+// PRODUCTS
+// ============================================================================
+
+export const handleProductCreated = mutation({
+  args: {
+    stripeProductId: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    active: v.boolean(),
+    type: v.optional(v.string()),
+    defaultPriceId: v.optional(v.string()),
+    metadata: v.optional(v.any()),
+    images: v.optional(v.array(v.string())),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("products")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .unique();
+
+    if (!existing) {
+      await ctx.db.insert("products", {
+        stripeProductId: args.stripeProductId,
+        name: args.name,
+        description: args.description,
+        active: args.active,
+        type: args.type,
+        defaultPriceId: args.defaultPriceId,
+        metadata: args.metadata || {},
+        images: args.images,
+      });
+    }
+
+    return null;
+  },
+});
+
+export const handleProductUpdated = mutation({
+  args: {
+    stripeProductId: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    active: v.boolean(),
+    type: v.optional(v.string()),
+    defaultPriceId: v.optional(v.string()),
+    metadata: v.optional(v.any()),
+    images: v.optional(v.array(v.string())),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const product = await ctx.db
+      .query("products")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .unique();
+
+    if (product) {
+      await ctx.db.patch("products", product._id, {
+        name: args.name,
+        description: args.description,
+        active: args.active,
+        type: args.type,
+        defaultPriceId: args.defaultPriceId,
+        metadata: args.metadata,
+        images: args.images,
+      });
+    } else {
+      // Product doesn't exist yet, create it
+      await ctx.db.insert("products", {
+        stripeProductId: args.stripeProductId,
+        name: args.name,
+        description: args.description,
+        active: args.active,
+        type: args.type,
+        defaultPriceId: args.defaultPriceId,
+        metadata: args.metadata || {},
+        images: args.images,
+      });
+    }
+
+    return null;
+  },
+});
+
+export const handleProductDeleted = mutation({
+  args: {
+    stripeProductId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const product = await ctx.db
+      .query("products")
+      .withIndex("by_stripe_product_id", (q) =>
+        q.eq("stripeProductId", args.stripeProductId),
+      )
+      .unique();
+
+    if (product) {
+      await ctx.db.patch("products", product._id, {
+        active: false,
+      });
+    }
+
+    return null;
+  },
+});
+
+// ============================================================================
+// PRICES
+// ============================================================================
+
+export const handlePriceCreated = mutation({
+  args: {
+    stripePriceId: v.string(),
+    stripeProductId: v.string(),
+    active: v.boolean(),
+    currency: v.string(),
+    type: v.string(),
+    unitAmount: v.optional(v.number()),
+    description: v.optional(v.string()),
+    lookupKey: v.optional(v.string()),
+    recurringInterval: v.optional(v.string()),
+    recurringIntervalCount: v.optional(v.number()),
+    trialPeriodDays: v.optional(v.number()),
+    usageType: v.optional(v.string()),
+    billingScheme: v.optional(v.string()),
+    tiersMode: v.optional(v.string()),
+    tiers: v.optional(v.array(tierValidator)),
+    metadata: v.optional(v.any()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_price_id", (q) =>
+        q.eq("stripePriceId", args.stripePriceId),
+      )
+      .unique();
+
+    if (!existing) {
+      await ctx.db.insert("prices", {
+        stripePriceId: args.stripePriceId,
+        stripeProductId: args.stripeProductId,
+        active: args.active,
+        currency: args.currency,
+        type: args.type,
+        unitAmount: args.unitAmount,
+        description: args.description,
+        lookupKey: args.lookupKey,
+        recurringInterval: args.recurringInterval,
+        recurringIntervalCount: args.recurringIntervalCount,
+        trialPeriodDays: args.trialPeriodDays,
+        usageType: args.usageType,
+        billingScheme: args.billingScheme,
+        tiersMode: args.tiersMode,
+        tiers: args.tiers,
+        metadata: args.metadata || {},
+      });
+    }
+
+    return null;
+  },
+});
+
+export const handlePriceUpdated = mutation({
+  args: {
+    stripePriceId: v.string(),
+    stripeProductId: v.string(),
+    active: v.boolean(),
+    currency: v.string(),
+    type: v.string(),
+    unitAmount: v.optional(v.number()),
+    description: v.optional(v.string()),
+    lookupKey: v.optional(v.string()),
+    recurringInterval: v.optional(v.string()),
+    recurringIntervalCount: v.optional(v.number()),
+    trialPeriodDays: v.optional(v.number()),
+    usageType: v.optional(v.string()),
+    billingScheme: v.optional(v.string()),
+    tiersMode: v.optional(v.string()),
+    tiers: v.optional(v.array(tierValidator)),
+    metadata: v.optional(v.any()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const price = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_price_id", (q) =>
+        q.eq("stripePriceId", args.stripePriceId),
+      )
+      .unique();
+
+    if (price) {
+      await ctx.db.patch("prices", price._id, {
+        stripeProductId: args.stripeProductId,
+        active: args.active,
+        currency: args.currency,
+        type: args.type,
+        unitAmount: args.unitAmount,
+        description: args.description,
+        lookupKey: args.lookupKey,
+        recurringInterval: args.recurringInterval,
+        recurringIntervalCount: args.recurringIntervalCount,
+        trialPeriodDays: args.trialPeriodDays,
+        usageType: args.usageType,
+        billingScheme: args.billingScheme,
+        tiersMode: args.tiersMode,
+        tiers: args.tiers,
+        metadata: args.metadata,
+      });
+    } else {
+      // Price doesn't exist yet, create it
+      await ctx.db.insert("prices", {
+        stripePriceId: args.stripePriceId,
+        stripeProductId: args.stripeProductId,
+        active: args.active,
+        currency: args.currency,
+        type: args.type,
+        unitAmount: args.unitAmount,
+        description: args.description,
+        lookupKey: args.lookupKey,
+        recurringInterval: args.recurringInterval,
+        recurringIntervalCount: args.recurringIntervalCount,
+        trialPeriodDays: args.trialPeriodDays,
+        usageType: args.usageType,
+        billingScheme: args.billingScheme,
+        tiersMode: args.tiersMode,
+        tiers: args.tiers,
+        metadata: args.metadata || {},
+      });
+    }
+
+    return null;
+  },
+});
+
+export const handlePriceDeleted = mutation({
+  args: {
+    stripePriceId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const price = await ctx.db
+      .query("prices")
+      .withIndex("by_stripe_price_id", (q) =>
+        q.eq("stripePriceId", args.stripePriceId),
+      )
+      .unique();
+
+    if (price) {
+      await ctx.db.patch("prices", price._id, {
+        active: false,
+      });
+    }
+
+    return null;
+  },
+});
 
 export const updateSubscriptionQuantityInternal = mutation({
   args: {
