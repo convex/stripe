@@ -94,6 +94,6 @@
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js",
   "dependencies": {
-    "stripe": "^22.2.1"
+    "stripe": "^23.0.0"
   }
 }
