@@ -252,6 +252,15 @@ export const handleSubscriptionUpdated = mutation({
       deriveCancelAtPeriodEnd(args.cancelAt, args.currentPeriodEnd);
 
     if (subscription) {
+      // `canceled` is terminal in Stripe: a cancelled subscription never
+      // returns to an active state — resubscribing mints a new subscription id.
+      // Stripe does not guarantee webhook ordering and retries for up to three
+      // days, so an older `customer.subscription.updated` can arrive after
+      // `customer.subscription.deleted` and would otherwise patch this row back
+      // to `active`, silently restoring access to somebody who cancelled.
+      if (subscription.status === "canceled" && args.status !== "canceled") {
+        return null;
+      }
       await ctx.db.patch("subscriptions", subscription._id, {
         status: args.status,
         currentPeriodEnd: args.currentPeriodEnd,
