@@ -28,7 +28,7 @@ authentication.
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/get-convex/convex-stripe
+git clone https://github.com/convex/convex-stripe
 cd convex-stripe
 npm install
 ```

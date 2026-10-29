@@ -178,7 +178,7 @@ function Hero({ setCurrentPage }: { setCurrentPage: (page: Page) => void }) {
               <span>→</span>
             </button>
             <a
-              href="https://github.com/get-convex/convex-stripe"
+              href="https://github.com/convex/convex-stripe"
               target="_blank"
               rel="noopener noreferrer"
               className="btn-secondary"

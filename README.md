@@ -400,7 +400,7 @@ The component creates these tables in its namespace:
 Check out the full example app in the [`example/`](./example) directory:
 
 ```bash
-git clone https://github.com/get-convex/convex-stripe
+git clone https://github.com/convex/convex-stripe
 cd convex-stripe
 npm install
 npm run dev
