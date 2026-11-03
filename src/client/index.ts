@@ -97,10 +97,13 @@ export class StripeSubscriptions {
       quantity: args.quantity,
     });
 
-    await ctx.runMutation(this.component.private.updateSubscriptionQuantityInternal, {
-      stripeSubscriptionId: args.stripeSubscriptionId,
-      quantity: args.quantity,
-    });
+    await ctx.runMutation(
+      this.component.private.updateSubscriptionQuantityInternal,
+      {
+        stripeSubscriptionId: args.stripeSubscriptionId,
+        quantity: args.quantity,
+      },
+    );
 
     return null;
   }
@@ -268,7 +271,10 @@ export class StripeSubscriptions {
         },
       };
     }
-    if (sessionParams.payment_intent_data || paramsOverrides.payment_intent_data) {
+    if (
+      sessionParams.payment_intent_data ||
+      paramsOverrides.payment_intent_data
+    ) {
       finalParams.payment_intent_data = {
         ...sessionParams.payment_intent_data,
         ...paramsOverrides.payment_intent_data,
