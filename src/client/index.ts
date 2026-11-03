@@ -325,7 +325,11 @@ export class StripeSubscriptions {
 
   /**
    * Get or create a Stripe customer for a user.
-   * Checks existing customers, subscriptions, and payments to avoid duplicates.
+   *
+   * Looks for a customer linked to `userId`, then for one linked through the
+   * user's subscriptions or payments, then for an unclaimed customer with the
+   * same email. Customers deleted in Stripe are never returned, and a
+   * customer that belongs to a different user is never matched by email.
    */
   async getOrCreateCustomer(
     ctx: ActionCtx,
@@ -335,7 +339,6 @@ export class StripeSubscriptions {
       name?: string;
     },
   ) {
-    // Check the customers table directly by userId (uses by_user_id index)
     const existingByUserId = await ctx.runQuery(
       this.component.public.getCustomerByUserId,
       { userId: args.userId },
@@ -347,38 +350,44 @@ export class StripeSubscriptions {
       };
     }
 
-    // Fallback: check by email (uses by_email index)
+    const existingSubs = await ctx.runQuery(
+      this.component.public.listSubscriptionsByUserId,
+      { userId: args.userId },
+    );
+    const existingPayments = await ctx.runQuery(
+      this.component.public.listPaymentsByUserId,
+      { userId: args.userId },
+    );
+    const linkedCustomerIds = [
+      ...existingSubs.map((subscription) => subscription.stripeCustomerId),
+      ...existingPayments.map((payment) => payment.stripeCustomerId),
+    ];
+    for (const customerId of new Set(linkedCustomerIds)) {
+      if (!customerId) continue;
+      const customer = await ctx.runQuery(this.component.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (!customer?.deleted) {
+        return { customerId, isNew: false };
+      }
+    }
+
     if (args.email) {
       const existingByEmail = await ctx.runQuery(
         this.component.public.getCustomerByEmail,
         { email: args.email },
       );
-      if (existingByEmail) {
+      if (existingByEmail && !existingByEmail.userId) {
+        await this.linkCustomerToUser(
+          ctx,
+          existingByEmail.stripeCustomerId,
+          args.userId,
+        );
         return {
           customerId: existingByEmail.stripeCustomerId,
           isNew: false,
         };
       }
-    }
-
-    // Check if customer exists by userId in subscriptions
-    const existingSubs = await ctx.runQuery(
-      this.component.public.listSubscriptionsByUserId,
-      { userId: args.userId },
-    );
-
-    if (existingSubs.length > 0) {
-      return { customerId: existingSubs[0].stripeCustomerId, isNew: false };
-    }
-
-    // Check existing payments
-    const existingPayments = await ctx.runQuery(
-      this.component.public.listPaymentsByUserId,
-      { userId: args.userId },
-    );
-
-    if (existingPayments.length > 0 && existingPayments[0].stripeCustomerId) {
-      return { customerId: existingPayments[0].stripeCustomerId, isNew: false };
     }
 
     // Create a new customer with idempotency key to prevent race conditions
@@ -390,6 +399,22 @@ export class StripeSubscriptions {
     });
 
     return { customerId: result.customerId, isNew: true };
+  }
+
+  private async linkCustomerToUser(
+    ctx: ActionCtx,
+    stripeCustomerId: string,
+    userId: string,
+  ) {
+    const customer = await this.stripe().customers.update(stripeCustomerId, {
+      metadata: { userId },
+    });
+    await ctx.runMutation(this.component.public.createOrUpdateCustomer, {
+      stripeCustomerId,
+      email: customer.email ?? undefined,
+      name: customer.name ?? undefined,
+      metadata: customer.metadata,
+    });
   }
 
   /**

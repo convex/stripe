@@ -579,9 +579,137 @@ test("customer deletion scrubs PII but preserves linkage", async () => {
     stripeCustomerId: "cus_delete",
     userId: "user_delete",
     metadata: {},
+    deleted: true,
   });
   expect(customer?.email).toBeUndefined();
   expect(customer?.name).toBeUndefined();
+});
+
+test("user and email lookups skip deleted customers and prefer the newest", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_old",
+    email: "same@example.com",
+    metadata: { userId: "user_lookup" },
+  });
+  await t.mutation(api.private.handleCustomerDeleted, {
+    stripeCustomerId: "cus_old",
+  });
+
+  expect(
+    await t.query(api.public.getCustomerByUserId, { userId: "user_lookup" }),
+  ).toBeNull();
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_first",
+    email: "same@example.com",
+    metadata: { userId: "user_lookup" },
+  });
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_second",
+    email: "same@example.com",
+    metadata: { userId: "user_lookup" },
+  });
+
+  const byUserId = await t.query(api.public.getCustomerByUserId, {
+    userId: "user_lookup",
+  });
+  const byEmail = await t.query(api.public.getCustomerByEmail, {
+    email: "same@example.com",
+  });
+  expect(byUserId?.stripeCustomerId).toBe("cus_second");
+  expect(byEmail?.stripeCustomerId).toBe("cus_second");
+});
+
+test("customer.updated creates missing customers and links their userId", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerUpdated, {
+    stripeCustomerId: "cus_missed_create",
+    email: "missed@example.com",
+    metadata: {},
+  });
+  expect(
+    await t.query(api.public.getCustomer, {
+      stripeCustomerId: "cus_missed_create",
+    }),
+  ).toMatchObject({ email: "missed@example.com" });
+
+  await t.mutation(api.private.handleCustomerUpdated, {
+    stripeCustomerId: "cus_missed_create",
+    email: "missed@example.com",
+    metadata: { userId: "user_linked_later" },
+  });
+  const linked = await t.query(api.public.getCustomerByUserId, {
+    userId: "user_linked_later",
+  });
+  expect(linked?.stripeCustomerId).toBe("cus_missed_create");
+});
+
+test("a late customer.updated does not restore a deleted customer's details", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_gone",
+    email: "gone@example.com",
+    metadata: { userId: "user_gone" },
+  });
+  await t.mutation(api.private.handleCustomerDeleted, {
+    stripeCustomerId: "cus_gone",
+  });
+  await t.mutation(api.private.handleCustomerUpdated, {
+    stripeCustomerId: "cus_gone",
+    email: "gone@example.com",
+    name: "Gone",
+    metadata: { userId: "user_gone" },
+  });
+
+  const customer = await t.query(api.public.getCustomer, {
+    stripeCustomerId: "cus_gone",
+  });
+  expect(customer?.deleted).toBe(true);
+  expect(customer?.email).toBeUndefined();
+});
+
+async function createOrgSubscription(
+  t: ReturnType<typeof convexTest>,
+  stripeSubscriptionId: string,
+  status: string,
+) {
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId,
+    stripeCustomerId: "cus_org",
+    status,
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_team",
+    metadata: { orgId: "org_current" },
+  });
+}
+
+test("getSubscriptionByOrgId prefers a live subscription over newer canceled ones", async () => {
+  const t = convexTest(schema, modules);
+
+  await createOrgSubscription(t, "sub_live", "active");
+  await createOrgSubscription(t, "sub_newer_canceled", "canceled");
+
+  const current = await t.query(api.public.getSubscriptionByOrgId, {
+    orgId: "org_current",
+  });
+  expect(current?.stripeSubscriptionId).toBe("sub_live");
+});
+
+test("getSubscriptionByOrgId returns the newest when none are live", async () => {
+  const t = convexTest(schema, modules);
+
+  await createOrgSubscription(t, "sub_canceled_first", "canceled");
+  await createOrgSubscription(t, "sub_canceled_second", "canceled");
+
+  const current = await t.query(api.public.getSubscriptionByOrgId, {
+    orgId: "org_current",
+  });
+  expect(current?.stripeSubscriptionId).toBe("sub_canceled_second");
 });
 
 test("list payments by customer ID", async () => {

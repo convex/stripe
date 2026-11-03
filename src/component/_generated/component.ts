@@ -216,6 +216,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { stripeCustomerId: string },
         {
+          deleted?: boolean;
           email?: string;
           metadata?: any;
           name?: string;
@@ -229,6 +230,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { email: string },
         {
+          deleted?: boolean;
           email?: string;
           metadata?: any;
           name?: string;
@@ -242,6 +244,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { userId: string },
         {
+          deleted?: boolean;
           email?: string;
           metadata?: any;
           name?: string;
