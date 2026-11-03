@@ -284,7 +284,8 @@ export const handleSubscriptionCreated = mutation({
     const orgId = metadata.orgId as string | undefined;
     const userId = metadata.userId as string | undefined;
 
-    const cancelAtPeriodEnd = args.cancelAtPeriodEnd ||
+    const cancelAtPeriodEnd =
+      args.cancelAtPeriodEnd ||
       deriveCancelAtPeriodEnd(args.cancelAt, args.currentPeriodEnd);
 
     if (!existing) {
@@ -353,7 +354,8 @@ export const handleSubscriptionUpdated = mutation({
     const metadata = args.metadata || {};
     const orgId = metadata.orgId as string | undefined;
     const userId = metadata.userId as string | undefined;
-    const cancelAtPeriodEnd = args.cancelAtPeriodEnd ||
+    const cancelAtPeriodEnd =
+      args.cancelAtPeriodEnd ||
       deriveCancelAtPeriodEnd(args.cancelAt, args.currentPeriodEnd);
 
     if (subscription) {
@@ -559,10 +561,8 @@ export const handleInvoiceCreated = mutation({
           : existing.amountPaid,
         created: useIncomingLifecycleFields ? args.created : existing.created,
         metadata: useIncomingLifecycleFields ? metadata : existing.metadata,
-        ...(useIncomingLifecycleFields &&
-          orgId !== undefined && { orgId }),
-        ...(useIncomingLifecycleFields &&
-          userId !== undefined && { userId }),
+        ...(useIncomingLifecycleFields && orgId !== undefined && { orgId }),
+        ...(useIncomingLifecycleFields && userId !== undefined && { userId }),
       };
       if (patchChangesDocument(existing, patch)) {
         await ctx.db.patch("invoices", existing._id, patch);

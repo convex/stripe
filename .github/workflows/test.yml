@@ -18,12 +18,12 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Node setup
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
           cache-dependency-path: package.json
           node-version: "20.x"
@@ -40,3 +40,127 @@ jobs:
           npm run test
           npm run typecheck
           npm run lint
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Node setup
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          cache-dependency-path: package-lock.json
+          node-version: "20.x"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run format:check
+
+  node-compat:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22.x", "24.x"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Node setup
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          cache-dependency-path: package-lock.json
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  generated-code:
+    name: Generated code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Node setup
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          cache-dependency-path: package-lock.json
+          node-version: "20.x"
+          cache: "npm"
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+      - name: Regenerate Convex code on a local backend
+        env:
+          CONVEX_AGENT_MODE: anonymous
+        run: |
+          npx convex dev --once --typecheck disable
+          npx convex codegen --component-dir ./src/component --typecheck disable
+      - name: Check that the committed code matches
+        run: |
+          if ! git diff --exit-code -- example/convex/_generated src/component/_generated; then
+            echo "::error::Generated Convex code is out of date. Run 'npx convex dev --once' and 'npx convex codegen --component-dir ./src/component', then commit the result."
+            exit 1
+          fi
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Node setup
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          cache-dependency-path: package-lock.json
+          node-version: "20.x"
+          cache: "npm"
+      - run: npm ci
+      - name: Run signed webhooks through a local Convex backend
+        run: npm run test:e2e
+
+  e2e-stripe:
+    name: End-to-end (Stripe test mode)
+    # Pull requests from forks don't get repository secrets.
+    if:
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
+    steps:
+      - name: Skip without a Stripe key
+        if: env.STRIPE_E2E_SECRET_KEY == ''
+        run:
+          echo "::notice::STRIPE_E2E_SECRET_KEY is not set, so the Stripe
+          test-mode suite was skipped."
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: env.STRIPE_E2E_SECRET_KEY != ''
+        with:
+          persist-credentials: false
+      - name: Node setup
+        if: env.STRIPE_E2E_SECRET_KEY != ''
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          cache-dependency-path: package-lock.json
+          node-version: "20.x"
+          cache: "npm"
+      - uses: ./.github/actions/setup-stripe-cli
+        if: env.STRIPE_E2E_SECRET_KEY != ''
+      - name:
+          Run real Stripe objects and webhooks through a local Convex backend
+        if: env.STRIPE_E2E_SECRET_KEY != ''
+        run: |
+          npm ci
+          npm run test:e2e -- e2e/stripe.test.ts
