@@ -15,6 +15,26 @@ export type StripeApiVersion =
   | (string & {})
   | null;
 
+/**
+ * Arguments for `StripeSubscriptions.createCheckoutSession`. Setup mode saves a
+ * payment method without charging, so it takes no price.
+ */
+export type CreateCheckoutSessionArgs = {
+  customerId?: string;
+  successUrl: string;
+  cancelUrl: string;
+  metadata?: Record<string, string>;
+  /** Metadata to attach to the subscription (only for mode: "subscription") */
+  subscriptionMetadata?: Record<string, string>;
+  /** Metadata to attach to the payment intent (only for mode: "payment") */
+  paymentIntentMetadata?: Record<string, string>;
+  /** Additional Stripe Checkout Session parameters passed through to the API */
+  params?: Partial<StripeSDK.Checkout.SessionCreateParams>;
+} & (
+  | { mode: "payment" | "subscription"; priceId: string; quantity?: number }
+  | { mode: "setup"; priceId?: never; quantity?: never }
+);
+
 export type QueryCtx = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
 export type MutationCtx = Pick<
   GenericMutationCtx<GenericDataModel>,
