@@ -107,11 +107,26 @@ export const handleCustomerUpdated = mutation({
       )
       .unique();
 
+    const metadata = args.metadata || {};
+    const userId = metadata.userId as string | undefined;
+
+    if (customer?.deleted) {
+      return null;
+    }
     if (customer) {
       await ctx.db.patch("customers", customer._id, {
         email: args.email,
         name: args.name,
         metadata: args.metadata,
+        ...(userId !== undefined && { userId }),
+      });
+    } else {
+      await ctx.db.insert("customers", {
+        stripeCustomerId: args.stripeCustomerId,
+        email: args.email,
+        name: args.name,
+        metadata,
+        userId,
       });
     }
 
@@ -137,6 +152,7 @@ export const handleCustomerDeleted = mutation({
         email: undefined,
         name: undefined,
         metadata: {},
+        deleted: true,
       });
     }
 

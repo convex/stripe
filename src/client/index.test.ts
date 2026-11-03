@@ -16,6 +16,8 @@ const stripeMocks = vi.hoisted(() => ({
   updateSubscriptionItem: vi.fn(),
   createCheckoutSession: vi.fn(),
   constructEvent: vi.fn(),
+  createCustomer: vi.fn(),
+  updateCustomer: vi.fn(),
 }));
 
 vi.mock("stripe", () => ({
@@ -23,6 +25,10 @@ vi.mock("stripe", () => ({
     return {
       webhooks: {
         constructEventAsync: stripeMocks.constructEvent,
+      },
+      customers: {
+        create: stripeMocks.createCustomer,
+        update: stripeMocks.updateCustomer,
       },
       subscriptions: {
         retrieve: stripeMocks.retrieveSubscription,
@@ -225,6 +231,99 @@ describe("StripeSubscriptions client", () => {
       stripeCustomerId: "cus_reactivate",
       priceId: "price_reactivate",
     });
+  });
+
+  function getOrCreateCustomerCtx(lookups: {
+    byUserId?: unknown;
+    subscriptions?: unknown[];
+    payments?: unknown[];
+    linkedCustomers?: unknown[];
+    byEmail?: unknown;
+  }) {
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce(lookups.byUserId ?? null)
+      .mockResolvedValueOnce(lookups.subscriptions ?? [])
+      .mockResolvedValueOnce(lookups.payments ?? []);
+    for (const customer of lookups.linkedCustomers ?? []) {
+      runQuery.mockResolvedValueOnce(customer);
+    }
+    runQuery.mockResolvedValueOnce(lookups.byEmail ?? null);
+    return {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue("cus_ignored"),
+      runQuery,
+    };
+  }
+
+  test("getOrCreateCustomer skips a deleted customer linked through subscriptions", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_new" });
+    const ctx = getOrCreateCustomerCtx({
+      subscriptions: [{ stripeCustomerId: "cus_deleted" }],
+      linkedCustomers: [{ stripeCustomerId: "cus_deleted", deleted: true }],
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_returning",
+      email: "returning@example.com",
+    });
+
+    expect(result).toEqual({ customerId: "cus_new", isNew: true });
+  });
+
+  test("getOrCreateCustomer never matches another user's customer by email", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_mine" });
+    const ctx = getOrCreateCustomerCtx({
+      byEmail: { stripeCustomerId: "cus_someone_else", userId: "user_other" },
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_me",
+      email: "shared@example.com",
+    });
+
+    expect(result).toEqual({ customerId: "cus_mine", isNew: true });
+    expect(stripeMocks.updateCustomer).not.toHaveBeenCalled();
+  });
+
+  test("getOrCreateCustomer claims an unclaimed customer with the same email", async () => {
+    stripeMocks.updateCustomer.mockResolvedValueOnce({
+      id: "cus_unclaimed",
+      email: "claim@example.com",
+      name: null,
+      metadata: { userId: "user_claimer", plan: "legacy" },
+    });
+    const ctx = getOrCreateCustomerCtx({
+      byEmail: { stripeCustomerId: "cus_unclaimed" },
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_claimer",
+      email: "claim@example.com",
+    });
+
+    expect(result).toEqual({ customerId: "cus_unclaimed", isNew: false });
+    expect(stripeMocks.updateCustomer).toHaveBeenCalledWith("cus_unclaimed", {
+      metadata: { userId: "user_claimer" },
+    });
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.public.createOrUpdateCustomer,
+      {
+        stripeCustomerId: "cus_unclaimed",
+        email: "claim@example.com",
+        name: undefined,
+        metadata: { userId: "user_claimer", plan: "legacy" },
+      },
+    );
   });
 
   test("passes additional checkout session params without allowing mode override", async () => {

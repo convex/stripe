@@ -37,38 +37,40 @@ export const getCustomer = query({
 });
 
 /**
- * Get a customer by their email address.
- * Uses the by_email index for efficient lookup.
+ * Get the most recently created customer with this email address.
+ * Customers deleted in Stripe are skipped.
  */
 export const getCustomerByEmail = query({
   args: { email: v.string() },
   returns: v.union(customerValidator, v.null()),
   handler: async (ctx, args) => {
-    const customer = await ctx.db
+    const customers = ctx.db
       .query("customers")
       .withIndex("by_email", (q) => q.eq("email", args.email))
-      .first();
-    if (!customer) return null;
-    const { _id, _creationTime, ...data } = customer;
-    return data;
+      .order("desc");
+    for await (const { _id, _creationTime, ...data } of customers) {
+      if (!data.deleted) return data;
+    }
+    return null;
   },
 });
 
 /**
- * Get a customer by their user ID.
- * Uses the by_user_id index for efficient lookup.
+ * Get the most recently created customer for a user ID.
+ * Customers deleted in Stripe are skipped.
  */
 export const getCustomerByUserId = query({
   args: { userId: v.string() },
   returns: v.union(customerValidator, v.null()),
   handler: async (ctx, args) => {
-    const customer = await ctx.db
+    const customers = ctx.db
       .query("customers")
       .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
-      .first();
-    if (!customer) return null;
-    const { _id, _creationTime, ...data } = customer;
-    return data;
+      .order("desc");
+    for await (const { _id, _creationTime, ...data } of customers) {
+      if (!data.deleted) return data;
+    }
+    return null;
   },
 });
 
@@ -108,20 +110,45 @@ export const listSubscriptions = query({
   },
 });
 
+const SUBSCRIPTION_STATUS_PRIORITY: Record<string, number> = {
+  active: 0,
+  trialing: 0,
+  past_due: 1,
+  unpaid: 1,
+  paused: 1,
+  incomplete: 2,
+};
+
+function subscriptionStatusPriority(status: string) {
+  return SUBSCRIPTION_STATUS_PRIORITY[status] ?? 3;
+}
+
 /**
- * Get a subscription by organization ID.
- * Useful for looking up subscriptions by custom orgId.
+ * Get the current subscription for an organization ID.
+ * When an org has several, prefers active or trialing, then past due, unpaid,
+ * or paused, then incomplete, then anything else. Ties go to the newest.
  */
 export const getSubscriptionByOrgId = query({
   args: { orgId: v.string() },
   returns: v.union(subscriptionValidator, v.null()),
   handler: async (ctx, args) => {
-    const subscription = await ctx.db
+    const subscriptions = await ctx.db
       .query("subscriptions")
       .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
-      .first();
-    if (!subscription) return null;
-    const { _id, _creationTime, ...data } = subscription;
+      .order("desc")
+      .collect();
+    let current: (typeof subscriptions)[number] | undefined;
+    for (const subscription of subscriptions) {
+      if (
+        !current ||
+        subscriptionStatusPriority(subscription.status) <
+          subscriptionStatusPriority(current.status)
+      ) {
+        current = subscription;
+      }
+    }
+    if (!current) return null;
+    const { _id, _creationTime, ...data } = current;
     return data;
   },
 });
