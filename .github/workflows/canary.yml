@@ -1,0 +1,73 @@
+name: Canary
+
+# Runs the full suite against the newest stripe and convex releases, so
+# upstream changes show up here before a Renovate PR or a user hits them.
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Newest Stripe and Convex releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
+      STRIPE_E2E_LATEST_API_VERSION: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Node setup
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: "22.x"
+      - name: Install the newest stripe and convex releases
+        run: |
+          npm ci
+          npm install --no-save --min-release-age=0 stripe@latest convex@latest
+          npm ls stripe convex --depth=0 || true
+      - name: Build, test, and typecheck
+        run: |
+          npm run build
+          npm test
+          npm run typecheck
+      - uses: ./.github/actions/setup-stripe-cli
+        if: env.STRIPE_E2E_SECRET_KEY != ''
+      - name:
+          End-to-end, with real Stripe webhooks on the latest API version when a
+          key is set
+        run: npm run test:e2e
+
+  report:
+    name: Report failure
+    needs: canary
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the canary issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+            github.run_id }}
+        run: |
+          title="Canary: the newest stripe or convex release breaks the component"
+          body="The nightly canary failed against the newest stripe and convex releases: $RUN_URL"
+          issue=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

@@ -1,0 +1,19 @@
+name: Set up the Stripe CLI
+description: Installs a pinned Stripe CLI release after checking its checksum.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the Stripe CLI
+      shell: bash
+      env:
+        STRIPE_CLI_VERSION: "1.55.1"
+        STRIPE_CLI_SHA256: c7a1eb723ecd29aaa3c7ec3d16139d6f01126ea9df91bb6a161b9616ad8fba68
+      run: |
+        archive="$RUNNER_TEMP/stripe-cli.tar.gz"
+        curl -fsSL -o "$archive" \
+          "https://github.com/stripe/stripe-cli/releases/download/v${STRIPE_CLI_VERSION}/stripe_${STRIPE_CLI_VERSION}_linux_x86_64.tar.gz"
+        echo "${STRIPE_CLI_SHA256}  ${archive}" | sha256sum --check
+        tar -xzf "$archive" -C "$RUNNER_TEMP" stripe
+        sudo install -m 0755 "$RUNNER_TEMP/stripe" /usr/local/bin/stripe
+        stripe version
