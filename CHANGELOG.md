@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+Breaking changes:
+
+- Upgrade the Stripe Node SDK to v23.1. Apps that don't set `apiVersion` now
+  call Stripe with `2026-10-28.endive` instead of `2026-05-27.dahlia`. The
+  component's own Stripe calls and the webhook fields it reads work the same on
+  both. The event types passed to `events` and `onEvent` handlers now come from
+  stripe v23, while webhook payloads keep the API version configured on your
+  webhook endpoint.
+- The Stripe SDK now requires Node.js 20 or later.
+- `createCheckoutSession` throws if `params` includes `payment_method_types` on
+  endive API versions, where Stripe rejects it. Use
+  `allowed_payment_method_types` instead. Apps that pin an older `apiVersion`
+  can still pass it.
+- `getOrCreateCustomer` only reuses a customer by email when you pass
+  `matchByEmail: true`. Leave it off unless your auth provider verifies email
+  addresses.
+- Remove `public.updateSubscriptionQuantity`, which always threw. Use
+  `StripeSubscriptions.updateSubscriptionQuantity()`.
+- Remove the unused `private.handleInvoicePaid` and
+  `private.listSubscriptionsWithCreationTime` functions.
+- Remove the `@convex-dev/stripe/react` entrypoint, which only exported a
+  placeholder hook, and the `react` peer dependency.
+
+Other changes:
+
+- `createCheckoutSession` supports `mode: "setup"` without a `priceId` and no
+  longer sends a line item in setup mode.
+- `CreateCheckoutSessionArgs` is exported.
+
 ## 0.1.8 (unreleased)
 
 - Fix subscription renewals being recorded as one-time payments. Stripe removed
