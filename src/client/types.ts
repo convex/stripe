@@ -47,6 +47,15 @@ export type StripeEventHandlers = {
 };
 
 /**
+ * Where a webhook request failed. `event` is only present once the request's
+ * signature has been verified.
+ */
+export type StripeWebhookErrorDetails = {
+  stage: "signature" | "processing";
+  event?: Stripe.Event;
+};
+
+/**
  * Configuration for webhook registration.
  */
 export type RegisterRoutesConfig = {
@@ -67,6 +76,19 @@ export type RegisterRoutesConfig = {
    * This runs after default processing and before specific event handlers.
    */
   onEvent?: StripeEventHandler;
+
+  /**
+   * Optional callback for webhook failures. The component only logs a fixed
+   * message (plus the event ID and type once verified) because errors can
+   * carry the raw payload, signature header, or customer fields. Use this to
+   * send the underlying error to your own logging or monitoring.
+   */
+  onError?: (
+    ctx: GenericActionCtx<GenericDataModel>,
+    error: unknown,
+    details: StripeWebhookErrorDetails,
+  ) => void | Promise<void>;
+
   /**
    * Stripe webhook secret for signature verification.
    * Defaults to process.env.STRIPE_WEBHOOK_SECRET

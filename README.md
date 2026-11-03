@@ -328,6 +328,21 @@ registerRoutes(http, components.stripe, {
 export default http;
 ```
 
+If processing an event fails, the route responds with a 500 so Stripe retries
+the delivery. The component only logs a fixed message plus the event ID and
+type, because errors can contain the raw payload, the signature header, or
+customer fields. To see the underlying error, pass `onError` and send it to
+your own logging or monitoring:
+
+```typescript
+registerRoutes(http, components.stripe, {
+  onError: async (ctx, error, { stage, event }) => {
+    // stage is "signature" or "processing"; event is set once verified
+    reportToMonitoring(error, { stage, eventId: event?.id });
+  },
+});
+```
+
 ## Database Schema
 
 The component creates these tables in its namespace:
