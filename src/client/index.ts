@@ -134,20 +134,7 @@ export class StripeSubscriptions {
       );
     }
 
-    // Update local database immediately (don't wait for webhook)
-    const item = subscription.items.data[0];
-    await ctx.runMutation(this.component.private.handleSubscriptionUpdated, {
-      stripeSubscriptionId: subscription.id,
-      stripeCustomerId: getStripeObjectId(subscription.customer),
-      status: subscription.status,
-      currentPeriodEnd: item?.current_period_end || 0,
-      cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
-      cancelAt: subscription.cancel_at || undefined,
-      quantity: item?.quantity ?? 1,
-      priceId: item?.price?.id || undefined,
-      metadata: subscription.metadata || {},
-    });
-
+    await this.syncSubscription(ctx, subscription);
     return null;
   }
 
@@ -161,17 +148,46 @@ export class StripeSubscriptions {
       stripeSubscriptionId: string;
     },
   ) {
-    const stripe = this.stripe();
-
-    // Reactivate by setting cancel_at_period_end to false
-    const subscription = await stripe.subscriptions.update(
+    const subscription = await this.stripe().subscriptions.update(
       args.stripeSubscriptionId,
       {
         cancel_at_period_end: false,
       },
     );
 
-    // Update local database immediately
+    await this.syncSubscription(ctx, subscription);
+    return null;
+  }
+
+  /**
+   * Update a subscription's metadata in Stripe and sync it to Convex.
+   *
+   * Stripe is the source of truth for metadata: webhooks overwrite the copy in
+   * Convex, so change it here rather than with the component's
+   * `updateSubscriptionMetadata` mutation. Stripe merges keys, and setting a
+   * key to `""` removes it. `orgId` and `userId` keys also update the indexed
+   * lookup fields.
+   */
+  async updateSubscriptionMetadata(
+    ctx: ActionCtx,
+    args: {
+      stripeSubscriptionId: string;
+      metadata: Record<string, string>;
+    },
+  ) {
+    const subscription = await this.stripe().subscriptions.update(
+      args.stripeSubscriptionId,
+      { metadata: args.metadata },
+    );
+
+    await this.syncSubscription(ctx, subscription);
+    return null;
+  }
+
+  private async syncSubscription(
+    ctx: ActionCtx,
+    subscription: StripeSDK.Subscription,
+  ) {
     const item = subscription.items.data[0];
     await ctx.runMutation(this.component.private.handleSubscriptionUpdated, {
       stripeSubscriptionId: subscription.id,
@@ -184,8 +200,6 @@ export class StripeSubscriptions {
       priceId: item?.price?.id || undefined,
       metadata: subscription.metadata || {},
     });
-
-    return null;
   }
 
   // ============================================================================
@@ -533,6 +547,14 @@ export function registerRoutes(
       }
 
       try {
+        const alreadyProcessed = await ctx.runQuery(
+          component.private.isWebhookEventProcessed,
+          { stripeEventId: event.id },
+        );
+        if (alreadyProcessed) {
+          return webhookReceivedResponse();
+        }
+
         await processEvent(ctx, component, event, stripe);
 
         // Call generic event handler if provided
@@ -548,6 +570,12 @@ export function registerRoutes(
         if (customHandler) {
           await customHandler(ctx, event);
         }
+
+        await ctx.runMutation(component.private.markWebhookEventProcessed, {
+          stripeEventId: event.id,
+          type: event.type,
+          created: event.created,
+        });
       } catch (error) {
         console.error(
           `❌ Error processing webhook event ${event.id} (${event.type})`,
@@ -559,11 +587,15 @@ export function registerRoutes(
         return new Response("Error processing webhook", { status: 500 });
       }
 
-      return new Response(JSON.stringify({ received: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return webhookReceivedResponse();
     }),
+  });
+}
+
+function webhookReceivedResponse() {
+  return new Response(JSON.stringify({ received: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -605,6 +637,7 @@ export async function processEvent(
         email: customer.email || undefined,
         name: customer.name || undefined,
         metadata: customer.metadata,
+        eventCreated: event.created,
       });
       break;
     }
@@ -613,6 +646,7 @@ export async function processEvent(
       const customer = event.data.object as StripeSDK.Customer;
       await ctx.runMutation(component.private.handleCustomerDeleted, {
         stripeCustomerId: customer.id,
+        eventCreated: event.created,
       });
       break;
     }
@@ -631,6 +665,7 @@ export async function processEvent(
         quantity: subscription.items.data[0]?.quantity ?? 1,
         priceId: item?.price?.id || "",
         metadata: subscription.metadata || {},
+        eventCreated: event.created,
       });
       break;
     }
@@ -649,6 +684,7 @@ export async function processEvent(
         quantity: subscription.items.data[0]?.quantity ?? 1,
         priceId: item?.price?.id || undefined,
         metadata: subscription.metadata || {},
+        eventCreated: event.created,
       });
       break;
     }
@@ -661,6 +697,7 @@ export async function processEvent(
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
         currentPeriodEnd: item?.current_period_end ?? undefined,
         cancelAt: subscription.cancel_at ?? undefined,
+        eventCreated: event.created,
       });
       break;
     }

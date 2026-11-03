@@ -30,6 +30,17 @@ Other changes:
 - `createCheckoutSession` supports `mode: "setup"` without a `priceId` and no
   longer sends a line item in setup mode.
 - `CreateCheckoutSessionArgs` is exported.
+- The webhook route records processed event IDs in a new `webhook_events` table
+  and acknowledges redeliveries without running the sync or your handlers again.
+  A daily component cron deletes entries after 30 days.
+- Customers and subscriptions track the `created` time of the newest event
+  applied (`lastEventCreated`) and ignore older events that arrive late.
+- Invoice webhooks skip writes that change nothing, which cuts down the write
+  conflicts when several events for one invoice arrive together (#24).
+- New `StripeSubscriptions.updateSubscriptionMetadata()` writes metadata to
+  Stripe and syncs it. The component's `updateSubscriptionMetadata` mutation now
+  takes optional `metadata`, so it can link an `orgId` or `userId` without
+  replacing the metadata mirrored from Stripe.
 
 ## 0.1.8 (unreleased)
 
