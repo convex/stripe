@@ -381,14 +381,17 @@ export const createOrUpdateCustomer = mutation({
 });
 
 /**
- * Update subscription metadata for custom lookups.
- * You can provide orgId and userId for efficient indexed lookups,
- * and additional data in the metadata field.
+ * Link a subscription to an orgId or userId for indexed lookups. These links
+ * stay until Stripe metadata sets a different `orgId` or `userId`.
+ *
+ * `metadata` here only changes the copy in Convex, and the next Stripe webhook
+ * for the subscription replaces it. To change metadata, use
+ * `StripeSubscriptions.updateSubscriptionMetadata`, which writes to Stripe.
  */
 export const updateSubscriptionMetadata = mutation({
   args: {
     stripeSubscriptionId: v.string(),
-    metadata: v.any(),
+    metadata: v.optional(v.any()),
     orgId: v.optional(v.string()),
     userId: v.optional(v.string()),
   },
@@ -408,7 +411,7 @@ export const updateSubscriptionMetadata = mutation({
     }
 
     await ctx.db.patch("subscriptions", subscription._id, {
-      metadata: args.metadata,
+      ...(args.metadata !== undefined && { metadata: args.metadata }),
       ...(args.orgId !== undefined && { orgId: args.orgId }),
       ...(args.userId !== undefined && { userId: args.userId }),
     });

@@ -202,6 +202,13 @@ and in `registerRoutes` to control when you upgrade.
 | `cancelSubscription()`          | Cancel a subscription                   |
 | `reactivateSubscription()`      | Reactivate a subscription set to cancel |
 | `updateSubscriptionQuantity()`  | Update seat count                       |
+| `updateSubscriptionMetadata()`  | Update metadata in Stripe and sync it   |
+
+Stripe is the source of truth for subscription metadata, and webhooks overwrite
+the copy in Convex. Change metadata with
+`stripeClient.updateSubscriptionMetadata(ctx, { stripeSubscriptionId, metadata })`,
+which writes to Stripe first. The component's `updateSubscriptionMetadata`
+mutation is for linking a subscription to an `orgId` or `userId` in Convex only.
 
 ### createCheckoutSession
 
@@ -343,10 +350,10 @@ user is allowed to see it before calling them, as the examples above do with
 
 ### Public Mutations
 
-| Mutation                     | Arguments                                               | Description                                               |
-| ---------------------------- | ------------------------------------------------------- | --------------------------------------------------------- |
-| `createOrUpdateCustomer`     | `stripeCustomerId`, `email?`, `name?`, `metadata?`      | Store a customer; `metadata.userId` links it to a user    |
-| `updateSubscriptionMetadata` | `stripeSubscriptionId`, `metadata`, `orgId?`, `userId?` | Link a subscription to an org or user for indexed lookups |
+| Mutation                     | Arguments                                                | Description                                               |
+| ---------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| `createOrUpdateCustomer`     | `stripeCustomerId`, `email?`, `name?`, `metadata?`       | Store a customer; `metadata.userId` links it to a user    |
+| `updateSubscriptionMetadata` | `stripeSubscriptionId`, `metadata?`, `orgId?`, `userId?` | Link a subscription to an org or user for indexed lookups |
 
 ## Webhook Events
 
@@ -368,6 +375,17 @@ The component automatically handles these Stripe webhook events:
 | `invoice.payment_succeeded`     | Upserts invoice record                                       |
 | `invoice.payment_failed`        | Keeps the invoice `open`; never downgrades a paid invoice    |
 | `checkout.session.completed`    | Records the session and syncs its first subscription invoice |
+
+Stripe can deliver an event more than once and doesn't guarantee order. The
+component handles both:
+
+- After an event is synced and your handlers succeed, its ID goes into the
+  `webhook_events` table. Later deliveries of the same event get a 200 without
+  running the sync or your handlers again. A daily cron deletes entries after 30
+  days.
+- Customers and subscriptions store the `created` time of the newest event
+  applied to them, and older events for the same object are ignored. A canceled
+  subscription is never moved back to another status.
 
 ### Custom Webhook Handlers
 
@@ -426,30 +444,32 @@ The component creates these tables in its namespace:
 
 ### customers
 
-| Field              | Type     | Description                     |
-| ------------------ | -------- | ------------------------------- |
-| `stripeCustomerId` | string   | Stripe customer ID              |
-| `email`            | string?  | Customer email                  |
-| `name`             | string?  | Customer name                   |
-| `metadata`         | object?  | Custom metadata                 |
-| `userId`           | string?  | Linked user ID, from `metadata` |
-| `deleted`          | boolean? | `true` once deleted in Stripe   |
+| Field              | Type     | Description                               |
+| ------------------ | -------- | ----------------------------------------- |
+| `stripeCustomerId` | string   | Stripe customer ID                        |
+| `email`            | string?  | Customer email                            |
+| `name`             | string?  | Customer name                             |
+| `metadata`         | object?  | Custom metadata                           |
+| `userId`           | string?  | Linked user ID, from `metadata`           |
+| `deleted`          | boolean? | `true` once deleted in Stripe             |
+| `lastEventCreated` | number?  | `created` time of the newest event synced |
 
 ### subscriptions
 
-| Field                  | Type    | Description               |
-| ---------------------- | ------- | ------------------------- |
-| `stripeSubscriptionId` | string  | Stripe subscription ID    |
-| `stripeCustomerId`     | string  | Customer ID               |
-| `status`               | string  | Subscription status       |
-| `priceId`              | string  | Price ID                  |
-| `quantity`             | number? | Seat count                |
-| `currentPeriodEnd`     | number  | Period end timestamp      |
-| `cancelAtPeriodEnd`    | boolean | Will cancel at period end |
-| `cancelAt`             | number? | Scheduled cancel time     |
-| `userId`               | string? | Linked user ID            |
-| `orgId`                | string? | Linked org ID             |
-| `metadata`             | object? | Custom metadata           |
+| Field                  | Type    | Description                               |
+| ---------------------- | ------- | ----------------------------------------- |
+| `stripeSubscriptionId` | string  | Stripe subscription ID                    |
+| `stripeCustomerId`     | string  | Customer ID                               |
+| `status`               | string  | Subscription status                       |
+| `priceId`              | string  | Price ID                                  |
+| `quantity`             | number? | Seat count                                |
+| `currentPeriodEnd`     | number  | Period end timestamp                      |
+| `cancelAtPeriodEnd`    | boolean | Will cancel at period end                 |
+| `cancelAt`             | number? | Scheduled cancel time                     |
+| `userId`               | string? | Linked user ID                            |
+| `orgId`                | string? | Linked org ID                             |
+| `metadata`             | object? | Metadata mirrored from Stripe             |
+| `lastEventCreated`     | number? | `created` time of the newest event synced |
 
 ### checkout_sessions
 
@@ -489,6 +509,15 @@ The component creates these tables in its namespace:
 | `userId`               | string? | Linked user ID    |
 | `orgId`                | string? | Linked org ID     |
 | `metadata`             | object? | Invoice metadata  |
+
+### webhook_events
+
+| Field           | Type   | Description                               |
+| --------------- | ------ | ----------------------------------------- |
+| `stripeEventId` | string | Stripe event ID                           |
+| `type`          | string | Event type                                |
+| `created`       | number | Stripe `event.created` (seconds)          |
+| `processedAt`   | number | When the component finished processing it |
 
 ## Example App
 

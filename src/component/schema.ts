@@ -9,6 +9,8 @@ export default defineSchema({
     metadata: v.optional(v.any()),
     userId: v.optional(v.string()),
     deleted: v.optional(v.boolean()),
+    // Stripe `event.created` (seconds) of the newest webhook applied
+    lastEventCreated: v.optional(v.number()),
   })
     .index("by_stripe_customer_id", ["stripeCustomerId"])
     .index("by_email", ["email"])
@@ -26,6 +28,8 @@ export default defineSchema({
     // Custom lookup fields for efficient querying
     orgId: v.optional(v.string()),
     userId: v.optional(v.string()),
+    // Stripe `event.created` (seconds) of the newest webhook applied
+    lastEventCreated: v.optional(v.number()),
   })
     .index("by_stripe_subscription_id", ["stripeSubscriptionId"])
     .index("by_stripe_customer_id", ["stripeCustomerId"])
@@ -74,4 +78,12 @@ export default defineSchema({
     .index("by_stripe_subscription_id", ["stripeSubscriptionId"])
     .index("by_org_id", ["orgId"])
     .index("by_user_id", ["userId"]),
+  webhook_events: defineTable({
+    stripeEventId: v.string(),
+    type: v.string(),
+    created: v.number(),
+    processedAt: v.number(),
+  })
+    .index("by_stripe_event_id", ["stripeEventId"])
+    .index("by_processed_at", ["processedAt"]),
 });

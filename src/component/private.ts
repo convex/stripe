@@ -1,5 +1,105 @@
 import { v } from "convex/values";
-import { mutation } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
+import { internalMutation, mutation, query } from "./_generated/server.js";
+
+// ============================================================================
+// WEBHOOK EVENT LEDGER
+// ============================================================================
+
+const WEBHOOK_EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const WEBHOOK_EVENT_PRUNE_BATCH = 500;
+
+export const isWebhookEventProcessed = query({
+  args: { stripeEventId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const event = await ctx.db
+      .query("webhook_events")
+      .withIndex("by_stripe_event_id", (q) =>
+        q.eq("stripeEventId", args.stripeEventId),
+      )
+      .unique();
+    return event !== null;
+  },
+});
+
+export const markWebhookEventProcessed = mutation({
+  args: {
+    stripeEventId: v.string(),
+    type: v.string(),
+    created: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhook_events")
+      .withIndex("by_stripe_event_id", (q) =>
+        q.eq("stripeEventId", args.stripeEventId),
+      )
+      .unique();
+    if (!existing) {
+      await ctx.db.insert("webhook_events", {
+        ...args,
+        processedAt: Date.now(),
+      });
+    }
+    return null;
+  },
+});
+
+export const pruneWebhookEvents = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const expired = await ctx.db
+      .query("webhook_events")
+      .withIndex("by_processed_at", (q) =>
+        q.lt("processedAt", Date.now() - WEBHOOK_EVENT_RETENTION_MS),
+      )
+      .take(WEBHOOK_EVENT_PRUNE_BATCH);
+    for (const event of expired) {
+      await ctx.db.delete("webhook_events", event._id);
+    }
+    if (expired.length === WEBHOOK_EVENT_PRUNE_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.private.pruneWebhookEvents, {});
+    }
+    return null;
+  },
+});
+
+// Stripe's `event.created` has one-second resolution, so events from the same
+// second are applied in arrival order.
+function isStaleEvent(
+  lastEventCreated: number | undefined,
+  eventCreated: number | undefined,
+) {
+  return (
+    lastEventCreated !== undefined &&
+    eventCreated !== undefined &&
+    eventCreated < lastEventCreated
+  );
+}
+
+// Several webhooks for one object often arrive at once with the same data.
+// Skipping writes that change nothing keeps them from conflicting with each
+// other and exhausting Convex's retries.
+function patchChangesDocument(
+  document: Record<string, unknown>,
+  patch: Record<string, unknown>,
+) {
+  return Object.entries(patch).some(
+    ([key, value]) => JSON.stringify(document[key]) !== JSON.stringify(value),
+  );
+}
+
+function newestEventCreated(
+  lastEventCreated: number | undefined,
+  eventCreated: number | undefined,
+) {
+  if (eventCreated === undefined) return lastEventCreated;
+  if (lastEventCreated === undefined) return eventCreated;
+  return Math.max(lastEventCreated, eventCreated);
+}
 
 // ============================================================================
 // INTERNAL MUTATIONS (for webhooks and internal use)
@@ -35,6 +135,7 @@ export const handleCustomerCreated = mutation({
     email: v.optional(v.string()),
     name: v.optional(v.string()),
     metadata: v.optional(v.any()),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -54,6 +155,7 @@ export const handleCustomerCreated = mutation({
         name: args.name,
         metadata,
         userId,
+        lastEventCreated: args.eventCreated,
       });
     }
 
@@ -67,6 +169,7 @@ export const handleCustomerUpdated = mutation({
     email: v.optional(v.string()),
     name: v.optional(v.string()),
     metadata: v.optional(v.any()),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -84,11 +187,18 @@ export const handleCustomerUpdated = mutation({
       return null;
     }
     if (customer) {
+      if (isStaleEvent(customer.lastEventCreated, args.eventCreated)) {
+        return null;
+      }
       await ctx.db.patch("customers", customer._id, {
         email: args.email,
         name: args.name,
         metadata: args.metadata,
         ...(userId !== undefined && { userId }),
+        lastEventCreated: newestEventCreated(
+          customer.lastEventCreated,
+          args.eventCreated,
+        ),
       });
     } else {
       await ctx.db.insert("customers", {
@@ -97,6 +207,7 @@ export const handleCustomerUpdated = mutation({
         name: args.name,
         metadata,
         userId,
+        lastEventCreated: args.eventCreated,
       });
     }
 
@@ -107,6 +218,7 @@ export const handleCustomerUpdated = mutation({
 export const handleCustomerDeleted = mutation({
   args: {
     stripeCustomerId: v.string(),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -123,6 +235,10 @@ export const handleCustomerDeleted = mutation({
         name: undefined,
         metadata: {},
         deleted: true,
+        lastEventCreated: newestEventCreated(
+          customer.lastEventCreated,
+          args.eventCreated,
+        ),
       });
     }
 
@@ -152,6 +268,7 @@ export const handleSubscriptionCreated = mutation({
     quantity: v.optional(v.number()),
     priceId: v.string(),
     metadata: v.optional(v.any()),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -183,6 +300,7 @@ export const handleSubscriptionCreated = mutation({
         metadata: metadata,
         orgId: orgId,
         userId: userId,
+        lastEventCreated: args.eventCreated,
       });
     }
 
@@ -221,6 +339,7 @@ export const handleSubscriptionUpdated = mutation({
     quantity: v.optional(v.number()),
     priceId: v.optional(v.string()),
     metadata: v.optional(v.any()),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -247,6 +366,9 @@ export const handleSubscriptionUpdated = mutation({
       if (subscription.status === "canceled" && args.status !== "canceled") {
         return null;
       }
+      if (isStaleEvent(subscription.lastEventCreated, args.eventCreated)) {
+        return null;
+      }
       await ctx.db.patch("subscriptions", subscription._id, {
         status: args.status,
         currentPeriodEnd: args.currentPeriodEnd,
@@ -258,6 +380,10 @@ export const handleSubscriptionUpdated = mutation({
         ...(args.metadata !== undefined && { metadata }),
         ...(orgId !== undefined && { orgId }),
         ...(userId !== undefined && { userId }),
+        lastEventCreated: newestEventCreated(
+          subscription.lastEventCreated,
+          args.eventCreated,
+        ),
       });
     } else if (args.stripeCustomerId && args.priceId) {
       await ctx.db.insert("subscriptions", {
@@ -272,6 +398,7 @@ export const handleSubscriptionUpdated = mutation({
         metadata,
         orgId,
         userId,
+        lastEventCreated: args.eventCreated,
       });
     }
 
@@ -285,6 +412,7 @@ export const handleSubscriptionDeleted = mutation({
     cancelAtPeriodEnd: v.optional(v.boolean()),
     currentPeriodEnd: v.optional(v.number()),
     cancelAt: v.optional(v.number()),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -305,6 +433,10 @@ export const handleSubscriptionDeleted = mutation({
           currentPeriodEnd: args.currentPeriodEnd,
         }),
         ...(args.cancelAt !== undefined && { cancelAt: args.cancelAt }),
+        lastEventCreated: newestEventCreated(
+          subscription.lastEventCreated,
+          args.eventCreated,
+        ),
       });
     }
 
@@ -413,7 +545,7 @@ export const handleInvoiceCreated = mutation({
         existing.status,
         args.status,
       );
-      await ctx.db.patch("invoices", existing._id, {
+      const patch = {
         stripeCustomerId: args.stripeCustomerId,
         ...(args.stripeSubscriptionId !== undefined && {
           stripeSubscriptionId: args.stripeSubscriptionId,
@@ -431,7 +563,10 @@ export const handleInvoiceCreated = mutation({
           orgId !== undefined && { orgId }),
         ...(useIncomingLifecycleFields &&
           userId !== undefined && { userId }),
-      });
+      };
+      if (patchChangesDocument(existing, patch)) {
+        await ctx.db.patch("invoices", existing._id, patch);
+      }
     } else {
       await ctx.db.insert("invoices", {
         stripeInvoiceId: args.stripeInvoiceId,
@@ -465,9 +600,10 @@ export const handleInvoicePaymentFailed = mutation({
       .unique();
 
     if (invoice) {
-      await ctx.db.patch("invoices", invoice._id, {
-        status: latestInvoiceStatus(invoice.status, "open"),
-      });
+      const status = latestInvoiceStatus(invoice.status, "open");
+      if (status !== invoice.status) {
+        await ctx.db.patch("invoices", invoice._id, { status });
+      }
     }
 
     return null;
