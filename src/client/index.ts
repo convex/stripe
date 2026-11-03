@@ -14,6 +14,7 @@ import type {
   StripeWebhookErrorDetails,
 } from "./types.js";
 import type { ComponentApi } from "../component/_generated/component.js";
+import schema from "../component/schema.js";
 
 type StripeClientConfig = ConstructorParameters<typeof StripeSDK>[1];
 type StripeClientConfigWithApiVersion = Omit<
@@ -30,6 +31,13 @@ export type {
   StripeEventHandlers,
   StripeWebhookErrorDetails,
 };
+
+/** Validators for the documents the component's queries return. */
+export const vCustomer = schema.tables.customers.validator;
+export const vSubscription = schema.tables.subscriptions.validator;
+export const vCheckoutSession = schema.tables.checkout_sessions.validator;
+export const vPayment = schema.tables.payments.validator;
+export const vInvoice = schema.tables.invoices.validator;
 
 /**
  * Stripe Component Client

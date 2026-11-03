@@ -33,6 +33,14 @@
   start syncing.
 - `getSubscriptionByOrgId` returns the org's live subscription (active or
   trialing first) instead of the oldest one, which was often canceled.
+- Export `vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, and
+  `vInvoice` for `returns` validators on queries that pass component data
+  through.
+- The example app no longer ships public functions without auth checks. If you
+  copied `linkSubscriptionToOrg`, `getCustomerData`, `getSubscriptionInfo`,
+  `getOrgSubscription`, `getOrgPayments`, or `getOrgInvoices` from it, add an
+  authorization check to your copy. `linkSubscriptionToOrg` let any caller
+  attach any subscription to themselves and then cancel it.
 
 ## 0.1.7
 
