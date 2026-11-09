@@ -126,7 +126,8 @@ describe("webhook route", () => {
     });
   });
 
-  test("acknowledges an already processed event without running anything", async () => {
+  test("acknowledges an already processed event without running anything, and logs the skip", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const { ctx, steps } = webhookCtx({ alreadyProcessed: true });
     const onEvent = vi.fn();
     const { handler } = getWebhookRoute({ onEvent });
@@ -139,6 +140,28 @@ describe("webhook route", () => {
     expect(response.status).toBe(200);
     expect(steps).toEqual(["check ledger"]);
     expect(onEvent).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "⏭️ Skipping webhook event evt_customer_created (customer.created) - already processed",
+    );
+  });
+
+  test("with deduplicateEvents off, handles an already processed event again and records nothing", async () => {
+    const { ctx, steps } = webhookCtx({ alreadyProcessed: true });
+    const { handler } = getWebhookRoute({
+      deduplicateEvents: false,
+      onEvent: async () => {
+        steps.push("onEvent");
+      },
+    });
+
+    const response = await handler(
+      ctx,
+      await signedRequest(customerCreatedEvent),
+    );
+
+    expect(response.status).toBe(200);
+    expect(steps).toEqual(["sync customer", "onEvent"]);
+    expect(ctx.runQuery).not.toHaveBeenCalled();
   });
 
   test("does not record the event when a handler fails, so Stripe retries", async () => {

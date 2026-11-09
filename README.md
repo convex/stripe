@@ -381,11 +381,26 @@ component handles both:
 
 - After an event is synced and your handlers succeed, its ID goes into the
   `webhook_events` table. Later deliveries of the same event get a 200 without
-  running the sync or your handlers again. A daily cron deletes entries after 30
-  days.
+  running the sync or your handlers again, and the route logs that it skipped
+  them. A daily cron deletes entries after 30 days.
 - Customers and subscriptions store the `created` time of the newest event
-  applied to them, and older events for the same object are ignored. A canceled
+  applied to them in `lastEventCreated`, and older events for the same object
+  are ignored. The public queries don't return that field. A canceled
   subscription is never moved back to another status.
+
+Resending an event from the Stripe Dashboard or with `stripe events resend`
+reuses its ID. An event whose processing failed was never recorded, so resending
+it works. To replay events that were already processed, for example after
+changing what one of your handlers does, turn the check off while you resend
+them:
+
+```typescript
+registerRoutes(http, components.stripe, {
+  deduplicateEvents: false, // Defaults to true
+});
+```
+
+With it off, the route neither checks nor records event IDs.
 
 ### Custom Webhook Handlers
 
@@ -587,6 +602,8 @@ Check the Convex logs in your dashboard for errors. Common issues:
 - Wrong webhook URL (should be
   `https://<deployment>.convex.site/stripe/webhook`)
 - Missing events in webhook configuration
+- A restricted `STRIPE_SECRET_KEY` that can't read invoices, invoice payments,
+  or subscriptions. The webhook route looks these up in Stripe.
 
 ## License
 
