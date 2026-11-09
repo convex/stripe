@@ -1,7 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-export default defineSchema({
+const schema = defineSchema({
   customers: defineTable({
     stripeCustomerId: v.string(),
     email: v.optional(v.string()),
@@ -87,3 +87,15 @@ export default defineSchema({
     .index("by_stripe_event_id", ["stripeEventId"])
     .index("by_processed_at", ["processedAt"]),
 });
+
+export default schema;
+
+// Customers and subscriptions as the public queries return them. They leave
+// out `lastEventCreated`, which the component only uses to order webhooks, so
+// a new bookkeeping field can't break an app's `returns` validators.
+const { lastEventCreated: _customerEventTime, ...customerFields } =
+  schema.tables.customers.validator.fields;
+const { lastEventCreated: _subscriptionEventTime, ...subscriptionFields } =
+  schema.tables.subscriptions.validator.fields;
+export const vCustomer = v.object(customerFields);
+export const vSubscription = v.object(subscriptionFields);

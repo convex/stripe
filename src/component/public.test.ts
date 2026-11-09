@@ -1079,6 +1079,16 @@ async function updateSubscriptionAt(
   });
 }
 
+/** Reads the field from storage, since the public queries don't return it. */
+async function storedLastEventCreated(
+  t: ReturnType<typeof convexTest>,
+  table: "customers" | "subscriptions",
+) {
+  const documents = await t.run((ctx) => ctx.db.query(table).collect());
+  expect(documents).toHaveLength(1);
+  return documents[0].lastEventCreated;
+}
+
 test("subscription events older than the last applied one are ignored", async () => {
   const t = convexTest(schema, modules);
 
@@ -1095,7 +1105,8 @@ test("subscription events older than the last applied one are ignored", async ()
   const afterNewer = await t.query(api.public.getSubscription, {
     stripeSubscriptionId: "sub_ordered",
   });
-  expect(afterNewer).toMatchObject({ status: "active", lastEventCreated: 400 });
+  expect(afterNewer?.status).toBe("active");
+  expect(await storedLastEventCreated(t, "subscriptions")).toBe(400);
 });
 
 test("updates without an event timestamp still apply", async () => {
@@ -1112,10 +1123,62 @@ test("updates without an event timestamp still apply", async () => {
   const subscription = await t.query(api.public.getSubscription, {
     stripeSubscriptionId: "sub_ordered",
   });
-  expect(subscription).toMatchObject({
-    cancelAtPeriodEnd: true,
-    lastEventCreated: 300,
+  expect(subscription?.cancelAtPeriodEnd).toBe(true);
+  expect(await storedLastEventCreated(t, "subscriptions")).toBe(300);
+});
+
+test("customer and subscription queries leave out lastEventCreated", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_internal",
+    email: "internal@example.com",
+    metadata: { userId: "user_internal" },
+    eventCreated: 100,
   });
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId: "sub_internal",
+    stripeCustomerId: "cus_internal",
+    status: "active",
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_internal",
+    metadata: { userId: "user_internal", orgId: "org_internal" },
+    eventCreated: 100,
+  });
+  expect(await storedLastEventCreated(t, "customers")).toBe(100);
+  expect(await storedLastEventCreated(t, "subscriptions")).toBe(100);
+
+  // Each query's `returns` validator also rejects the field, so a query that
+  // forgot to drop it would throw here.
+  const documents = [
+    await t.query(api.public.getCustomer, {
+      stripeCustomerId: "cus_internal",
+    }),
+    await t.query(api.public.getCustomerByEmail, {
+      email: "internal@example.com",
+    }),
+    await t.query(api.public.getCustomerByUserId, { userId: "user_internal" }),
+    await t.query(api.public.getSubscription, {
+      stripeSubscriptionId: "sub_internal",
+    }),
+    await t.query(api.public.getSubscriptionByOrgId, { orgId: "org_internal" }),
+    ...(await t.query(api.public.listSubscriptions, {
+      stripeCustomerId: "cus_internal",
+    })),
+    ...(await t.query(api.public.listSubscriptionsByOrgId, {
+      orgId: "org_internal",
+    })),
+    ...(await t.query(api.public.listSubscriptionsByUserId, {
+      userId: "user_internal",
+    })),
+  ];
+
+  expect(documents).toHaveLength(8);
+  for (const document of documents) {
+    expect(document).not.toBeNull();
+    expect(document).not.toHaveProperty("lastEventCreated");
+  }
 });
 
 test("customer events older than the last applied one are ignored", async () => {

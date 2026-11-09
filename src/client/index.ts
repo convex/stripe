@@ -15,7 +15,7 @@ import type {
   StripeWebhookErrorDetails,
 } from "./types.js";
 import type { ComponentApi } from "../component/_generated/component.js";
-import schema from "../component/schema.js";
+import schema, { vCustomer, vSubscription } from "../component/schema.js";
 
 type StripeClientConfig = ConstructorParameters<typeof StripeSDK>[1];
 type StripeClientConfigWithApiVersion = Omit<
@@ -35,8 +35,7 @@ export type {
 };
 
 /** Validators for the documents the component's queries return. */
-export const vCustomer = schema.tables.customers.validator;
-export const vSubscription = schema.tables.subscriptions.validator;
+export { vCustomer, vSubscription };
 export const vCheckoutSession = schema.tables.checkout_sessions.validator;
 export const vPayment = schema.tables.payments.validator;
 export const vInvoice = schema.tables.invoices.validator;
@@ -494,6 +493,7 @@ export function registerRoutes(
 ) {
   const webhookPath = config?.webhookPath ?? "/stripe/webhook";
   const eventHandlers = config?.events ?? {};
+  const deduplicateEvents = config?.deduplicateEvents ?? true;
 
   http.route({
     path: webhookPath,
@@ -547,12 +547,17 @@ export function registerRoutes(
       }
 
       try {
-        const alreadyProcessed = await ctx.runQuery(
-          component.private.isWebhookEventProcessed,
-          { stripeEventId: event.id },
-        );
-        if (alreadyProcessed) {
-          return webhookReceivedResponse();
+        if (deduplicateEvents) {
+          const alreadyProcessed = await ctx.runQuery(
+            component.private.isWebhookEventProcessed,
+            { stripeEventId: event.id },
+          );
+          if (alreadyProcessed) {
+            console.log(
+              `⏭️ Skipping webhook event ${event.id} (${event.type}) - already processed`,
+            );
+            return webhookReceivedResponse();
+          }
         }
 
         await processEvent(ctx, component, event, stripe);
@@ -571,11 +576,13 @@ export function registerRoutes(
           await customHandler(ctx, event);
         }
 
-        await ctx.runMutation(component.private.markWebhookEventProcessed, {
-          stripeEventId: event.id,
-          type: event.type,
-          created: event.created,
-        });
+        if (deduplicateEvents) {
+          await ctx.runMutation(component.private.markWebhookEventProcessed, {
+            stripeEventId: event.id,
+            type: event.type,
+            created: event.created,
+          });
+        }
       } catch (error) {
         console.error(
           `❌ Error processing webhook event ${event.id} (${event.type})`,

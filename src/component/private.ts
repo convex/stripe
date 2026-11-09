@@ -248,6 +248,7 @@ export const handleCustomerDeleted = mutation({
         stripeCustomerId: args.stripeCustomerId,
         metadata: {},
         deleted: true,
+        lastEventCreated: args.eventCreated,
       });
     }
 

@@ -218,7 +218,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           deleted?: boolean;
           email?: string;
-          lastEventCreated?: number;
           metadata?: any;
           name?: string;
           stripeCustomerId: string;
@@ -233,7 +232,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           deleted?: boolean;
           email?: string;
-          lastEventCreated?: number;
           metadata?: any;
           name?: string;
           stripeCustomerId: string;
@@ -248,7 +246,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           deleted?: boolean;
           email?: string;
-          lastEventCreated?: number;
           metadata?: any;
           name?: string;
           stripeCustomerId: string;
@@ -281,7 +278,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
-          lastEventCreated?: number;
           metadata?: any;
           orgId?: string;
           priceId: string;
@@ -301,7 +297,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
-          lastEventCreated?: number;
           metadata?: any;
           orgId?: string;
           priceId: string;
@@ -439,7 +434,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
-          lastEventCreated?: number;
           metadata?: any;
           orgId?: string;
           priceId: string;
@@ -459,7 +453,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
-          lastEventCreated?: number;
           metadata?: any;
           orgId?: string;
           priceId: string;
@@ -479,7 +472,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
-          lastEventCreated?: number;
           metadata?: any;
           orgId?: string;
           priceId: string;

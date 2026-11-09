@@ -32,9 +32,14 @@ Other changes:
 - `CreateCheckoutSessionArgs` is exported.
 - The webhook route records processed event IDs in a new `webhook_events` table
   and acknowledges redeliveries without running the sync or your handlers again.
-  A daily component cron deletes entries after 30 days.
+  It logs each one it skips. A daily component cron deletes entries after 30
+  days.
+- Resending an event from the Stripe Dashboard or CLI reuses its ID, so an event
+  that was already processed is skipped as well. Pass `deduplicateEvents: false`
+  to `registerRoutes` while you replay events.
 - Customers and subscriptions track the `created` time of the newest event
-  applied (`lastEventCreated`) and ignore older events that arrive late.
+  applied (`lastEventCreated`) and ignore older events that arrive late. The
+  public queries don't return this field.
 - Invoice webhooks skip writes that change nothing, which cuts down the write
   conflicts when several events for one invoice arrive together (#24).
 - New `StripeSubscriptions.updateSubscriptionMetadata()` writes metadata to
