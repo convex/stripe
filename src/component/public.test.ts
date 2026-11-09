@@ -672,6 +672,44 @@ test("a late customer.updated does not restore a deleted customer's details", as
   expect(customer?.email).toBeUndefined();
 });
 
+test("customer.deleted records the deletion of a customer that was never synced", async () => {
+  const t = convexTest(schema, modules);
+
+  // Only the subscription reached the component, so it is the one thing that
+  // still points at the customer.
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId: "sub_of_unsynced_customer",
+    stripeCustomerId: "cus_never_synced",
+    status: "active",
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_basic",
+    metadata: { userId: "user_unsynced" },
+  });
+
+  await t.mutation(api.private.handleCustomerDeleted, {
+    stripeCustomerId: "cus_never_synced",
+  });
+  // A `customer.created` that arrives after the deletion must not undo it.
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_never_synced",
+    email: "late@example.com",
+    metadata: { userId: "user_unsynced" },
+  });
+
+  const customer = await t.query(api.public.getCustomer, {
+    stripeCustomerId: "cus_never_synced",
+  });
+  expect(customer).toMatchObject({
+    stripeCustomerId: "cus_never_synced",
+    deleted: true,
+  });
+  expect(customer?.email).toBeUndefined();
+  expect(
+    await t.query(api.public.getCustomerByUserId, { userId: "user_unsynced" }),
+  ).toBeNull();
+});
+
 async function createOrgSubscription(
   t: ReturnType<typeof convexTest>,
   stripeSubscriptionId: string,
