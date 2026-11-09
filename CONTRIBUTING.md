@@ -31,6 +31,12 @@ This deploys the example app and the component to a local Convex backend
 webhooks to the real HTTP route and checks what the component stored. It writes
 `.env.local` and a `.convex/` folder, both gitignored.
 
+The suite sets `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` on the backend it
+uses. It refuses to start if the checkout points at any other Convex deployment
+through `.env.local`, `.env`, or environment variables, which is what
+`npm run dev` sets up when you are logged in to Convex. If you run the example
+app on the same local backend, set your own Stripe keys again afterwards.
+
 To also run the real Stripe suite, install the
 [Stripe CLI](https://docs.stripe.com/stripe-cli) and set a test-mode key:
 
