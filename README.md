@@ -587,6 +587,8 @@ Check the Convex logs in your dashboard for errors. Common issues:
 - Wrong webhook URL (should be
   `https://<deployment>.convex.site/stripe/webhook`)
 - Missing events in webhook configuration
+- A restricted `STRIPE_SECRET_KEY` that can't read invoices, invoice payments,
+  or subscriptions. The webhook route looks these up in Stripe.
 
 ## License
 

@@ -56,6 +56,10 @@ Other changes:
   including failures while syncing a checkout's invoice or checking whether a
   payment belongs to a subscription. Previously these were logged and
   acknowledged with 200.
+- `payment_intent.succeeded` now calls Stripe's Invoice Payments and Invoices
+  APIs, and a subscription checkout reads its subscription and invoice. A
+  restricted `STRIPE_SECRET_KEY` needs read access to all three, or those events
+  fail with a 500 and Stripe keeps retrying them.
 - Webhook logs no longer include raw errors, which could contain the payload,
   signature header, or customer fields. Add the new `onError` option to
   `registerRoutes` to report the underlying error yourself.
@@ -65,9 +69,13 @@ Other changes:
 - `getOrCreateCustomer` no longer returns a customer that belongs to another
   user. An email match is only reused when that customer has no `userId`, and
   the customer is then linked to the user in Stripe and in Convex.
-- Customers deleted in Stripe are marked `deleted: true`. `getOrCreateCustomer`,
-  `getCustomerByUserId`, and `getCustomerByEmail` skip them, so a user whose
-  customer was deleted gets a new one instead of a checkout error.
+- Customers deleted in Stripe are marked `deleted: true`, including ones the
+  component had never stored. `getOrCreateCustomer`, `getCustomerByUserId`, and
+  `getCustomerByEmail` skip them, so a user whose customer was deleted gets a
+  new one instead of a checkout error.
+- Customer documents have a new optional `deleted` field, and `getCustomer`
+  still returns deleted customers. If you wrote your own `returns` validator for
+  customer data, add `deleted: v.optional(v.boolean())` to it.
 - `getCustomerByUserId` and `getCustomerByEmail` return the newest matching
   customer instead of the oldest.
 - `customer.updated` creates the customer if it isn't stored yet and links
