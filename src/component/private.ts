@@ -154,6 +154,15 @@ export const handleCustomerDeleted = mutation({
         metadata: {},
         deleted: true,
       });
+    } else {
+      // The customer was never synced, but its subscriptions or payments may
+      // have been. Record the deletion so `getOrCreateCustomer` can't hand the
+      // ID out through them, and a late `customer.created` can't bring it back.
+      await ctx.db.insert("customers", {
+        stripeCustomerId: args.stripeCustomerId,
+        metadata: {},
+        deleted: true,
+      });
     }
 
     return null;

@@ -27,9 +27,13 @@
 - `getOrCreateCustomer` no longer returns a customer that belongs to another
   user. An email match is only reused when that customer has no `userId`, and
   the customer is then linked to the user in Stripe and in Convex.
-- Customers deleted in Stripe are marked `deleted: true`. `getOrCreateCustomer`,
-  `getCustomerByUserId`, and `getCustomerByEmail` skip them, so a user whose
-  customer was deleted gets a new one instead of a checkout error.
+- Customers deleted in Stripe are marked `deleted: true`, including ones the
+  component had never stored. `getOrCreateCustomer`, `getCustomerByUserId`, and
+  `getCustomerByEmail` skip them, so a user whose customer was deleted gets a
+  new one instead of a checkout error.
+- Customer documents have a new optional `deleted` field, and `getCustomer`
+  still returns deleted customers. If you wrote your own `returns` validator for
+  customer data, add `deleted: v.optional(v.boolean())` to it.
 - `getCustomerByUserId` and `getCustomerByEmail` return the newest matching
   customer instead of the oldest.
 - `customer.updated` creates the customer if it isn't stored yet and links
