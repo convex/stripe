@@ -14,6 +14,10 @@
   including failures while syncing a checkout's invoice or checking whether a
   payment belongs to a subscription. Previously these were logged and
   acknowledged with 200.
+- `payment_intent.succeeded` now calls Stripe's Invoice Payments and Invoices
+  APIs, and a subscription checkout reads its subscription and invoice. A
+  restricted `STRIPE_SECRET_KEY` needs read access to all three, or those events
+  fail with a 500 and Stripe keeps retrying them.
 - Webhook logs no longer include raw errors, which could contain the payload,
   signature header, or customer fields. Add the new `onError` option to
   `registerRoutes` to report the underlying error yourself.
