@@ -672,6 +672,35 @@ test("a late customer.updated does not restore a deleted customer's details", as
   expect(customer?.email).toBeUndefined();
 });
 
+test("createOrUpdateCustomer leaves a deleted customer's scrubbed row alone", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_replayed",
+    email: "replayed@example.com",
+    metadata: { userId: "user_replayed" },
+  });
+  await t.mutation(api.private.handleCustomerDeleted, {
+    stripeCustomerId: "cus_replayed",
+  });
+
+  // What `createCustomer` writes when Stripe replays the create response.
+  await t.mutation(api.public.createOrUpdateCustomer, {
+    stripeCustomerId: "cus_replayed",
+    email: "replayed@example.com",
+    name: "Replayed",
+    metadata: { userId: "user_replayed" },
+  });
+
+  const customer = await t.query(api.public.getCustomer, {
+    stripeCustomerId: "cus_replayed",
+  });
+  expect(customer?.deleted).toBe(true);
+  expect(customer?.email).toBeUndefined();
+  expect(customer?.name).toBeUndefined();
+  expect(customer?.metadata).toEqual({});
+});
+
 test("customer.deleted records the deletion of a customer that was never synced", async () => {
   const t = convexTest(schema, modules);
 

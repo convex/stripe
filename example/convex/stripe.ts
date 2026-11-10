@@ -380,7 +380,8 @@ export const getCustomerPortalUrl = action({
     }
 
     // Customers created before metadata.userId was set are only linked
-    // through their subscriptions or payments.
+    // through their subscriptions or payments. Skip any that Stripe has
+    // deleted, since it has no portal for them.
     const subscriptions = await ctx.runQuery(
       components.stripe.public.listSubscriptionsByUserId,
       { userId: identity.subject },
@@ -389,15 +390,22 @@ export const getCustomerPortalUrl = action({
       components.stripe.public.listPaymentsByUserId,
       { userId: identity.subject },
     );
-    const customerId =
-      subscriptions[0]?.stripeCustomerId ??
-      payments.find((payment) => payment.stripeCustomerId)?.stripeCustomerId;
-    if (!customerId) return null;
-
-    return await stripeClient.createCustomerPortalSession(ctx, {
-      customerId,
-      returnUrl: `${getAppUrl()}/`,
-    });
+    const linkedCustomerIds = new Set([
+      ...subscriptions.map((subscription) => subscription.stripeCustomerId),
+      ...payments.map((payment) => payment.stripeCustomerId),
+    ]);
+    for (const customerId of linkedCustomerIds) {
+      if (!customerId) continue;
+      const linked = await ctx.runQuery(components.stripe.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (linked?.deleted) continue;
+      return await stripeClient.createCustomerPortalSession(ctx, {
+        customerId,
+        returnUrl: `${getAppUrl()}/`,
+      });
+    }
+    return null;
   },
 });
 
