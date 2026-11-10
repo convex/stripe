@@ -1688,3 +1688,95 @@ test("getCustomerByEmail can skip customers that already belong to a user", asyn
     }),
   ).toMatchObject({ stripeCustomerId: "cus_older_unclaimed" });
 });
+
+async function refundFailedPayment() {
+  const t = convexTest(schema, modules);
+  await t.mutation(api.private.handlePaymentIntentSucceeded, {
+    stripePaymentIntentId: "pi_late_refund",
+    amount: 4900,
+    currency: "usd",
+    status: "succeeded",
+    created: 1_800_000_000,
+  });
+  await t.mutation(api.private.handleChargeRefunded, {
+    stripePaymentIntentId: "pi_late_refund",
+    amountRefunded: 4900,
+    refunded: true,
+    eventCreated: 1000,
+  });
+  await t.mutation(api.private.handleChargeRefunded, {
+    stripePaymentIntentId: "pi_late_refund",
+    amountRefunded: 0,
+    refunded: false,
+    authoritative: true,
+    eventCreated: 2000,
+  });
+  const payment = () =>
+    t.query(api.public.getPayment, {
+      stripePaymentIntentId: "pi_late_refund",
+    });
+  return { t, payment };
+}
+
+test.each([1000, 2000])(
+  "a charge.refunded from second %i, redelivered after the refund failed at 2000, does not restore the total",
+  async (eventCreated) => {
+    const { t, payment } = await refundFailedPayment();
+
+    await t.mutation(api.private.handleChargeRefunded, {
+      stripePaymentIntentId: "pi_late_refund",
+      amountRefunded: 4900,
+      refunded: true,
+      eventCreated,
+    });
+
+    expect(await payment()).toMatchObject({
+      amountRefunded: 0,
+      refunded: false,
+    });
+  },
+);
+
+test("a new refund after a failed one still counts", async () => {
+  const { t, payment } = await refundFailedPayment();
+
+  await t.mutation(api.private.handleChargeRefunded, {
+    stripePaymentIntentId: "pi_late_refund",
+    amountRefunded: 1000,
+    refunded: false,
+    eventCreated: 3000,
+  });
+
+  expect(await payment()).toMatchObject({
+    amountRefunded: 1000,
+    refunded: false,
+  });
+});
+
+test("payment queries leave out the refund bookkeeping field", async () => {
+  const { t, payment } = await refundFailedPayment();
+
+  expect(await payment()).not.toHaveProperty("refundsCheckedAt");
+  for (const payments of [
+    await t.query(api.public.listPayments, { stripeCustomerId: "cus_none" }),
+    await t.run(async (ctx) => {
+      const row = await ctx.db.query("payments").first();
+      await ctx.db.patch("payments", row!._id, {
+        stripeCustomerId: "cus_late",
+        userId: "user_late",
+        orgId: "org_late",
+      });
+      return [];
+    }),
+    await t.query(api.public.listPayments, { stripeCustomerId: "cus_late" }),
+    await t.query(api.public.listPaymentsByUserId, { userId: "user_late" }),
+    await t.query(api.public.listPaymentsByOrgId, { orgId: "org_late" }),
+  ]) {
+    for (const row of payments) {
+      expect(row).not.toHaveProperty("refundsCheckedAt");
+    }
+  }
+  expect(
+    await t.query(api.public.listPaymentsByOrgId, { orgId: "org_late" }),
+  ).toHaveLength(1);
+});

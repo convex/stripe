@@ -83,8 +83,9 @@ Fixes:
 - When Stripe delivers one event twice at the same moment, only one delivery
   runs the sync and your handlers. The other gets a 409 and Stripe retries it.
   Both used to run.
-- A failed or canceled refund lowers the payment's `amountRefunded` again. Add
-  `refund.failed` to your webhook endpoint's events. A restricted
+- A failed or canceled refund lowers the payment's `amountRefunded` again, and a
+  `charge.refunded` from before the failure that arrives late can't raise it
+  back. Add `refund.failed` to your webhook endpoint's events. A restricted
   `STRIPE_SECRET_KEY` needs read access to charges for this.
 - `getOrCreateCustomer` with `matchByEmail` finds an unclaimed customer even
   when a newer customer with the same email belongs to another user.

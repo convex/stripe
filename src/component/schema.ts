@@ -59,6 +59,10 @@ const schema = defineSchema({
     // refund, so these are how a refund shows up.
     amountRefunded: v.optional(v.number()),
     refunded: v.optional(v.boolean()),
+    // Stripe `event.created` (seconds) of the newest failed-refund event after
+    // which the totals were read from Stripe. `charge.refunded` events from
+    // that second or earlier are out of date.
+    refundsCheckedAt: v.optional(v.number()),
     // Custom lookup fields for efficient querying
     orgId: v.optional(v.string()),
     userId: v.optional(v.string()),
@@ -101,12 +105,16 @@ const schema = defineSchema({
 
 export default schema;
 
-// Customers and subscriptions as the public queries return them. They leave
-// out `lastEventCreated`, which the component only uses to order webhooks, so
-// a new bookkeeping field can't break an app's `returns` validators.
+// Customers, subscriptions, and payments as the public queries return them.
+// They leave out `lastEventCreated` and `refundsCheckedAt`, which the
+// component only uses to order webhooks, so a new bookkeeping field can't
+// break an app's `returns` validators.
 const { lastEventCreated: _customerEventTime, ...customerFields } =
   schema.tables.customers.validator.fields;
 const { lastEventCreated: _subscriptionEventTime, ...subscriptionFields } =
   schema.tables.subscriptions.validator.fields;
 export const vCustomer = v.object(customerFields);
 export const vSubscription = v.object(subscriptionFields);
+const { refundsCheckedAt: _paymentRefundCheck, ...paymentFields } =
+  schema.tables.payments.validator.fields;
+export const vPayment = v.object(paymentFields);

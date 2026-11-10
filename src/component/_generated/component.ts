@@ -37,6 +37,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           amountRefunded: number;
           authoritative?: boolean;
+          eventCreated?: number;
           refunded: boolean;
           stripePaymentIntentId: string;
         },

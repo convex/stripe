@@ -539,26 +539,28 @@ updates. Sessions stored before 0.2.0 have no `paymentStatus`.
 
 ### payments
 
-| Field                   | Type     | Description                     |
-| ----------------------- | -------- | ------------------------------- |
-| `stripePaymentIntentId` | string   | Payment intent ID               |
-| `stripeCustomerId`      | string?  | Customer ID                     |
-| `amount`                | number   | Amount in cents                 |
-| `currency`              | string   | Currency code                   |
-| `status`                | string   | Payment status                  |
-| `created`               | number   | Created timestamp               |
-| `amountRefunded`        | number?  | Total refunded so far, in cents |
-| `refunded`              | boolean? | `true` once fully refunded      |
-| `userId`                | string?  | Linked user ID                  |
-| `orgId`                 | string?  | Linked org ID                   |
-| `metadata`              | object?  | Custom metadata                 |
+| Field                   | Type     | Description                           |
+| ----------------------- | -------- | ------------------------------------- |
+| `stripePaymentIntentId` | string   | Payment intent ID                     |
+| `stripeCustomerId`      | string?  | Customer ID                           |
+| `amount`                | number   | Amount in cents                       |
+| `currency`              | string   | Currency code                         |
+| `status`                | string   | Payment status                        |
+| `created`               | number   | Created timestamp                     |
+| `amountRefunded`        | number?  | Total refunded so far, in cents       |
+| `refunded`              | boolean? | `true` once fully refunded            |
+| `refundsCheckedAt`      | number?  | Internal, not returned by the queries |
+| `userId`                | string?  | Linked user ID                        |
+| `orgId`                 | string?  | Linked org ID                         |
+| `metadata`              | object?  | Custom metadata                       |
 
 Stripe leaves a payment's `status` as `succeeded` after a refund. Check
 `refunded` and `amountRefunded` to show refunds. They are only set once a
 `charge.refunded` event arrives, so add that event to your webhook endpoint. Add
 `refund.failed` as well: when a refund fails, the component reads the charge
-from Stripe and lowers the total again. Refunds of subscription charges aren't
-recorded, because subscription payments aren't stored in this table.
+from Stripe and lowers the total again. A `charge.refunded` from before the
+failure that Stripe delivers late is ignored. Refunds of subscription charges
+aren't recorded, because subscription payments aren't stored in this table.
 
 Disputes aren't synced. A payment that is charged back keeps its `succeeded`
 status here, so handle `charge.dispute.created` in your own `events` handler if

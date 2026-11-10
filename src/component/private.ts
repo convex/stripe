@@ -775,6 +775,7 @@ export const handleChargeRefunded = mutation({
     refunded: v.boolean(),
     // Set when the totals were just read from Stripe instead of an event.
     authoritative: v.optional(v.boolean()),
+    eventCreated: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -789,18 +790,40 @@ export const handleChargeRefunded = mutation({
     // mark for them.
     if (!payment) return null;
 
-    // Each event carries the running total, so the largest one is the newest
-    // even when two partial refunds arrive out of order. The total only drops
-    // when a refund fails, and then the caller reads it from Stripe.
-    const patch = args.authoritative
-      ? { amountRefunded: args.amountRefunded, refunded: args.refunded }
-      : {
-          amountRefunded: Math.max(
-            payment.amountRefunded ?? 0,
-            args.amountRefunded,
-          ),
-          refunded: (payment.refunded ?? false) || args.refunded,
-        };
+    let patch;
+    if (args.authoritative) {
+      // A refund failed, so the caller read the totals from Stripe. Remember
+      // when, so an older `charge.refunded` can't put the failed refund back.
+      const refundsCheckedAt = newestEventCreated(
+        payment.refundsCheckedAt,
+        args.eventCreated,
+      );
+      patch = {
+        amountRefunded: args.amountRefunded,
+        refunded: args.refunded,
+        ...(refundsCheckedAt !== undefined && { refundsCheckedAt }),
+      };
+    } else {
+      // Stripe retries and reorders deliveries. A `charge.refunded` created
+      // no later than the last check is a snapshot from before that check,
+      // which already counted any refund made in the same second.
+      if (
+        payment.refundsCheckedAt !== undefined &&
+        args.eventCreated !== undefined &&
+        args.eventCreated <= payment.refundsCheckedAt
+      ) {
+        return null;
+      }
+      // Each event carries the running total, so the largest one is the
+      // newest even when two partial refunds arrive out of order.
+      patch = {
+        amountRefunded: Math.max(
+          payment.amountRefunded ?? 0,
+          args.amountRefunded,
+        ),
+        refunded: (payment.refunded ?? false) || args.refunded,
+      };
+    }
     if (patchChangesDocument(payment, patch)) {
       await ctx.db.patch("payments", payment._id, patch);
     }

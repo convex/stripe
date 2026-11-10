@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
-import schema, { vCustomer, vSubscription } from "./schema.js";
+import schema, { vCustomer, vPayment, vSubscription } from "./schema.js";
 
 // ============================================================================
 // VALIDATOR HELPERS
@@ -10,8 +10,21 @@ import schema, { vCustomer, vSubscription } from "./schema.js";
 const customerValidator = vCustomer;
 const subscriptionValidator = vSubscription;
 const checkoutSessionValidator = schema.tables.checkout_sessions.validator;
-const paymentValidator = schema.tables.payments.validator;
+const paymentValidator = vPayment;
 const invoiceValidator = schema.tables.invoices.validator;
+
+/** Drops the system fields and the component's refund-ordering field. */
+function publicPayment<
+  T extends { _id: unknown; _creationTime: number; refundsCheckedAt?: number },
+>(payment: T) {
+  const {
+    _id,
+    _creationTime,
+    refundsCheckedAt: _refundsCheckedAt,
+    ...data
+  } = payment;
+  return data;
+}
 
 /** Drops the system fields and the component's webhook-ordering field. */
 function withoutInternalFields<
@@ -232,9 +245,7 @@ export const getPayment = query({
         q.eq("stripePaymentIntentId", args.stripePaymentIntentId),
       )
       .unique();
-    if (!payment) return null;
-    const { _id, _creationTime, ...data } = payment;
-    return data;
+    return payment ? publicPayment(payment) : null;
   },
 });
 
@@ -253,7 +264,7 @@ export const listPayments = query({
         ),
       args.limit,
     );
-    return payments.map(({ _id, _creationTime, ...data }) => data);
+    return payments.map(publicPayment);
   },
 });
 
@@ -270,7 +281,7 @@ export const listPaymentsByUserId = query({
         .withIndex("by_user_id", (q) => q.eq("userId", args.userId)),
       args.limit,
     );
-    return payments.map(({ _id, _creationTime, ...data }) => data);
+    return payments.map(publicPayment);
   },
 });
 
@@ -287,7 +298,7 @@ export const listPaymentsByOrgId = query({
         .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId)),
       args.limit,
     );
-    return payments.map(({ _id, _creationTime, ...data }) => data);
+    return payments.map(publicPayment);
   },
 });
 

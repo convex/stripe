@@ -15,7 +15,11 @@ import type {
   StripeWebhookErrorDetails,
 } from "./types.js";
 import type { ComponentApi } from "../component/_generated/component.js";
-import schema, { vCustomer, vSubscription } from "../component/schema.js";
+import schema, {
+  vCustomer,
+  vPayment,
+  vSubscription,
+} from "../component/schema.js";
 
 type StripeClientConfig = ConstructorParameters<typeof StripeSDK>[1];
 type StripeClientConfigWithApiVersion = Omit<
@@ -38,9 +42,8 @@ export type {
 };
 
 /** Validators for the documents the component's queries return. */
-export { vCustomer, vSubscription };
+export { vCustomer, vPayment, vSubscription };
 export const vCheckoutSession = schema.tables.checkout_sessions.validator;
-export const vPayment = schema.tables.payments.validator;
 export const vInvoice = schema.tables.invoices.validator;
 
 /**
@@ -886,6 +889,7 @@ export async function processEvent(
         stripePaymentIntentId,
         amountRefunded: charge.amount_refunded,
         refunded: charge.refunded,
+        eventCreated: event.created,
       });
       break;
     }
@@ -911,6 +915,7 @@ export async function processEvent(
         amountRefunded: charge.amount_refunded,
         refunded: charge.refunded,
         authoritative: true,
+        eventCreated: event.created,
       });
       break;
     }

@@ -1465,10 +1465,40 @@ describe("review fixes for 0.2.0", () => {
           amountRefunded: 1000,
           refunded: false,
           authoritative: true,
+          eventCreated: 1_800_000_000,
         },
       );
     },
   );
+
+  test("charge.refunded sends the event time, so a redelivery can be told from a new refund", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "charge.refunded",
+        created: 1_800_000_777,
+        data: {
+          object: {
+            id: "ch_timed",
+            payment_intent: "pi_timed",
+            amount_refunded: 4900,
+            refunded: true,
+          },
+        },
+      },
+      {},
+    );
+
+    expect(ctx.runMutation.mock.calls[0][1]).toEqual({
+      stripePaymentIntentId: "pi_timed",
+      amountRefunded: 4900,
+      refunded: true,
+      eventCreated: 1_800_000_777,
+    });
+  });
 
   test("a refund update that didn't fail makes no Stripe call", async () => {
     const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
