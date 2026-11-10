@@ -26,6 +26,9 @@ type StripeClientConfigWithApiVersion = Omit<
 
 export type StripeComponent = ComponentApi;
 
+// Each customer deleted within 24 hours of its creation costs one attempt.
+const MAX_CREATE_CUSTOMER_ATTEMPTS = 5;
+
 export type {
   RegisterRoutesConfig,
   StripeEventHandlers,
@@ -398,15 +401,30 @@ export class StripeSubscriptions {
       }
     }
 
-    // Create a new customer with idempotency key to prevent race conditions
-    const result = await this.createCustomer(ctx, {
-      email: args.email,
-      name: args.name,
-      metadata: { userId: args.userId },
-      idempotencyKey: args.userId,
-    });
-
-    return { customerId: result.customerId, isNew: true };
+    // Concurrent calls for one user share an idempotency key, so they all get
+    // the same customer. Stripe replays a key's response for 24 hours, even
+    // after that customer is deleted. When that happens, move to a key derived
+    // from the deleted customer, which concurrent calls also agree on.
+    let idempotencyKey = args.userId;
+    for (let attempt = 0; attempt < MAX_CREATE_CUSTOMER_ATTEMPTS; attempt++) {
+      const { customerId } = await this.createCustomer(ctx, {
+        email: args.email,
+        name: args.name,
+        metadata: { userId: args.userId },
+        idempotencyKey,
+      });
+      const stored = await ctx.runQuery(this.component.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (!stored?.deleted) {
+        return { customerId, isNew: true };
+      }
+      idempotencyKey = `${args.userId}_after_${customerId}`;
+    }
+    throw new Error(
+      `Could not create a Stripe customer for user ${args.userId}: ` +
+        "Stripe kept returning customers that have since been deleted.",
+    );
   }
 
   private async linkCustomerToUser(
