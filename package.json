@@ -57,7 +57,7 @@
     "convex": "^1.29.3"
   },
   "devDependencies": {
-    "@clerk/clerk-react": "5.61.8",
+    "@clerk/react": "6.17.4",
     "@convex-dev/eslint-plugin": "5.0.0",
     "@edge-runtime/vm": "5.0.0",
     "@eslint/eslintrc": "3.3.1",
