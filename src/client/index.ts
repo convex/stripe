@@ -978,9 +978,9 @@ async function getPaymentIntentSubscriptionId(
 }
 
 /**
- * API versions from 2025-03-31.basil onward report the billing period on each
- * subscription item. Earlier ones, which a webhook endpoint can still be
- * pinned to, report it on the subscription.
+ * The billing period is on each subscription item. Fall back to the
+ * subscription's own field, which older API versions also send, so a payload
+ * without the item field doesn't store a period end of 0.
  */
 function getSubscriptionPeriodEnd(subscription: StripeSDK.Subscription) {
   const legacySubscription = subscription as StripeSDK.Subscription & {

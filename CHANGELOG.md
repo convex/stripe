@@ -73,10 +73,10 @@ Fixes:
   component has stored it is now saved as canceled. Previously the event was
   dropped, and a late `created` or `updated` event then stored the subscription
   as active for good.
-- Subscriptions synced from a webhook endpoint on an API version before
-  `2025-03-31.basil` get their real `currentPeriodEnd`. It was stored as `0`,
-  because those payloads keep the period end on the subscription instead of on
-  its items.
+- Subscription events fall back to the subscription's own `current_period_end`
+  when its first item has none, instead of storing `currentPeriodEnd` as `0`.
+  Real payloads on API version `2023-08-16` already carry the value on the item,
+  so this only matters for payloads that leave it out.
 - `createCheckoutSession` merges `params.metadata` with the `metadata` argument
   instead of letting it replace the argument. The argument wins on shared keys,
   as `subscriptionMetadata` and `paymentIntentMetadata` already did.

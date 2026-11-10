@@ -1259,8 +1259,8 @@ function subscriptionEvent(
   };
 }
 
-// Webhook endpoints on API versions before 2025-03-31.basil send the period
-// end on the subscription instead of on its items.
+// A payload with the period end only on the subscription, which older API
+// versions also send there.
 const legacySubscription = {
   current_period_end: 1_700_000_000,
   items: { data: [{ quantity: 3, price: { id: "price_test" } }] },
@@ -1273,20 +1273,23 @@ describe("review fixes for 0.2.0", () => {
     "customer.subscription.created",
     "customer.subscription.updated",
     "customer.subscription.deleted",
-  ])("%s reads the period end from a pre-basil payload", async (type) => {
-    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+  ])(
+    "%s reads the period end from the subscription when the item has none",
+    async (type) => {
+      const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
 
-    await processEvent(
-      ctx,
-      components.stripe,
-      subscriptionEvent(type, legacySubscription),
-      {},
-    );
+      await processEvent(
+        ctx,
+        components.stripe,
+        subscriptionEvent(type, legacySubscription),
+        {},
+      );
 
-    expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
-      currentPeriodEnd: 1_700_000_000,
-    });
-  });
+      expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
+        currentPeriodEnd: 1_700_000_000,
+      });
+    },
+  );
 
   test("subscription events prefer the item's period end", async () => {
     const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
@@ -1305,7 +1308,7 @@ describe("review fixes for 0.2.0", () => {
     });
   });
 
-  test("cancelSubscription syncs the period end from a pre-basil response", async () => {
+  test("cancelSubscription syncs the period end from the subscription when the item has none", async () => {
     stripeMocks.cancelSubscription.mockResolvedValueOnce({
       id: "sub_legacy",
       customer: "cus_legacy",

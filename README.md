@@ -426,23 +426,8 @@ write handlers that are safe to repeat: check whether the email was sent or the
 credit was granted before doing it again.
 
 Webhook payloads use the API version set on your Stripe webhook endpoint, not
-the SDK's. The component reads payloads from `2025-03-31.basil` onward and from
-the versions before it, where a subscription's period end and an invoice's
-subscription are in different places.
-
-Resending an event from the Stripe Dashboard or with `stripe events resend`
-reuses its ID. An event whose processing failed was never recorded, so resending
-it works. To replay events that were already processed, for example after
-changing what one of your handlers does, turn the check off while you resend
-them:
-
-```typescript
-registerRoutes(http, components.stripe, {
-  deduplicateEvents: false, // Defaults to true
-});
-```
-
-With it off, the route neither checks nor records event IDs.
+the SDK's. The component is tested against payloads on `2023-08-16` and on the
+SDK's current version.
 
 ### Custom Webhook Handlers
 

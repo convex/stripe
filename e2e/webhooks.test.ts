@@ -348,7 +348,7 @@ describe("webhook route on a real Convex backend", () => {
     });
   });
 
-  test("reads the period end from a webhook endpoint on an older API version", async () => {
+  test("reads the period end from the subscription when its item has none", async () => {
     const userId = uniqueId("user");
     const subscriptionId = uniqueId("sub");
     const periodEnd = nowSeconds() + 7 * 24 * 60 * 60;
