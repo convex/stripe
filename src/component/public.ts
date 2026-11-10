@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { action, mutation, query } from "./_generated/server.js";
+import { mutation, query } from "./_generated/server.js";
 import schema from "./schema.js";
 
 // ============================================================================
@@ -417,26 +417,6 @@ export const updateSubscriptionMetadata = mutation({
       ...(args.userId !== undefined && { userId: args.userId }),
     });
 
-    return null;
-  },
-});
-
-/**
- * Update subscription quantity (for seat-based pricing).
- * This component action cannot safely update Stripe directly because component
- * actions do not have reliable access to STRIPE_SECRET_KEY.
- * Use the StripeSubscriptions client to update Stripe, then sync Convex.
- */
-export const updateSubscriptionQuantity = action({
-  args: {
-    stripeSubscriptionId: v.string(),
-    quantity: v.number(),
-  },
-  returns: v.null(),
-  handler: async () => {
-    throw new Error(
-      "updateSubscriptionQuantity must be called through StripeSubscriptions.updateSubscriptionQuantity() so the Stripe secret key stays outside component actions",
-    );
     return null;
   },
 });

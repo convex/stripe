@@ -21,30 +21,33 @@ const stripeMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("stripe", () => ({
-  default: vi.fn().mockImplementation(function StripeMock() {
-    return {
-      webhooks: {
-        constructEventAsync: stripeMocks.constructEvent,
-      },
-      customers: {
-        create: stripeMocks.createCustomer,
-        update: stripeMocks.updateCustomer,
-      },
-      subscriptions: {
-        retrieve: stripeMocks.retrieveSubscription,
-        update: stripeMocks.updateSubscription,
-        cancel: stripeMocks.cancelSubscription,
-      },
-      subscriptionItems: {
-        update: stripeMocks.updateSubscriptionItem,
-      },
-      checkout: {
-        sessions: {
-          create: stripeMocks.createCheckoutSession,
+  default: Object.assign(
+    vi.fn().mockImplementation(function StripeMock() {
+      return {
+        webhooks: {
+          constructEventAsync: stripeMocks.constructEvent,
         },
-      },
-    };
-  }),
+        customers: {
+          create: stripeMocks.createCustomer,
+          update: stripeMocks.updateCustomer,
+        },
+        subscriptions: {
+          retrieve: stripeMocks.retrieveSubscription,
+          update: stripeMocks.updateSubscription,
+          cancel: stripeMocks.cancelSubscription,
+        },
+        subscriptionItems: {
+          update: stripeMocks.updateSubscriptionItem,
+        },
+        checkout: {
+          sessions: {
+            create: stripeMocks.createCheckoutSession,
+          },
+        },
+      };
+    }),
+    { API_VERSION: "2026-10-28.endive" },
+  ),
 }));
 
 describe("StripeSubscriptions client", () => {
@@ -336,6 +339,29 @@ describe("StripeSubscriptions client", () => {
     expect(result).toEqual({ customerId: "cus_new", isNew: true });
   });
 
+  test("getOrCreateCustomer ignores email matches unless matchByEmail is set", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_fresh" });
+    const ctx = getOrCreateCustomerCtx({
+      byEmail: { stripeCustomerId: "cus_unclaimed" },
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_unverified",
+      email: "victim@example.com",
+    });
+
+    expect(result).toEqual({ customerId: "cus_fresh", isNew: true });
+    // Three lookups by user, then the check on the created customer. None
+    // by email.
+    expect(
+      ctx.runQuery.mock.calls.map(([, args]) => Object.keys(args)),
+    ).toEqual([["userId"], ["userId"], ["userId"], ["stripeCustomerId"]]);
+    expect(stripeMocks.updateCustomer).not.toHaveBeenCalled();
+  });
+
   test("getOrCreateCustomer never matches another user's customer by email", async () => {
     stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_mine" });
     const ctx = getOrCreateCustomerCtx({
@@ -348,6 +374,7 @@ describe("StripeSubscriptions client", () => {
     const result = await client.getOrCreateCustomer(ctx, {
       userId: "user_me",
       email: "shared@example.com",
+      matchByEmail: true,
     });
 
     expect(result).toEqual({ customerId: "cus_mine", isNew: true });
@@ -371,6 +398,7 @@ describe("StripeSubscriptions client", () => {
     const result = await client.getOrCreateCustomer(ctx, {
       userId: "user_claimer",
       email: "claim@example.com",
+      matchByEmail: true,
     });
 
     expect(result).toEqual({ customerId: "cus_unclaimed", isNew: false });
@@ -555,6 +583,85 @@ describe("StripeSubscriptions client", () => {
       ui_mode: "embedded_page",
       return_url: "https://example.com/return",
     });
+  });
+
+  test("setup mode sends no line items", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    stripeMocks.createCheckoutSession.mockResolvedValue({
+      id: "cs_setup",
+      url: "https://checkout.stripe.com/c/pay/cs_setup",
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.createCheckoutSession(
+      { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+      {
+        mode: "setup",
+        customerId: "cus_setup",
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+        params: { currency: "usd" },
+      },
+    );
+
+    expect(stripeMocks.createCheckoutSession).toHaveBeenCalledWith({
+      mode: "setup",
+      customer: "cus_setup",
+      success_url: "https://example.com/success",
+      cancel_url: "https://example.com/cancel",
+      metadata: {},
+      currency: "usd",
+    });
+  });
+
+  test("rejects payment_method_types on endive API versions", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await expect(
+      client.createCheckoutSession(
+        { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+        {
+          priceId: "price_monthly",
+          mode: "subscription",
+          successUrl: "https://example.com/success",
+          cancelUrl: "https://example.com/cancel",
+          params: { payment_method_types: ["card"] } as any,
+        },
+      ),
+    ).rejects.toThrow(/allowed_payment_method_types/);
+    expect(stripeMocks.createCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  test("passes payment_method_types through when pinned to an older API version", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    stripeMocks.createCheckoutSession.mockResolvedValue({
+      id: "cs_dahlia",
+      url: "https://checkout.stripe.com/c/pay/cs_dahlia",
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+      apiVersion: "2026-08-26.dahlia",
+    });
+
+    await client.createCheckoutSession(
+      { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+      {
+        priceId: "price_monthly",
+        mode: "subscription",
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+        params: { payment_method_types: ["card"] } as any,
+      },
+    );
+
+    expect(stripeMocks.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_method_types: ["card"] }),
+    );
   });
 
   test("keeps redirect URLs for legacy hosted checkout ui mode", async () => {

@@ -7,6 +7,7 @@ import StripeSDK from "stripe";
 import type {
   MutationCtx,
   ActionCtx,
+  CreateCheckoutSessionArgs,
   HttpRouter,
   RegisterRoutesConfig,
   StripeEventHandlers,
@@ -30,6 +31,7 @@ export type StripeComponent = ComponentApi;
 const MAX_CREATE_CUSTOMER_ATTEMPTS = 5;
 
 export type {
+  CreateCheckoutSessionArgs,
   RegisterRoutesConfig,
   StripeEventHandlers,
   StripeWebhookErrorDetails,
@@ -194,44 +196,33 @@ export class StripeSubscriptions {
   // ============================================================================
 
   /**
-   * Create a Stripe Checkout session for one-time payments or subscriptions.
+   * Create a Stripe Checkout session for a one-time payment, a subscription,
+   * or (with `mode: "setup"`) saving a payment method.
    *
    * Use `params` to pass additional Stripe Checkout Session parameters directly
    * to the Stripe API. Values in `params` override constructed defaults except
-   * `mode`, which remains controlled by the top-level argument.
+   * `mode`, which remains controlled by the top-level argument. Setup mode
+   * needs `params.currency` unless `params.allowed_payment_method_types` is
+   * set.
    */
-  async createCheckoutSession(
-    ctx: ActionCtx,
-    args: {
-      priceId: string;
-      customerId?: string;
-      mode: "payment" | "subscription" | "setup";
-      successUrl: string;
-      cancelUrl: string;
-      quantity?: number;
-      metadata?: Record<string, string>;
-      /** Metadata to attach to the subscription (only for mode: "subscription") */
-      subscriptionMetadata?: Record<string, string>;
-      /** Metadata to attach to the payment intent (only for mode: "payment") */
-      paymentIntentMetadata?: Record<string, string>;
-      /** Additional Stripe Checkout Session parameters passed through to the API */
-      params?: Partial<StripeSDK.Checkout.SessionCreateParams>;
-    },
-  ) {
+  async createCheckoutSession(ctx: ActionCtx, args: CreateCheckoutSessionArgs) {
+    assertNoPaymentMethodTypes(args.params, this._stripeConfig?.apiVersion);
     const stripe = this.stripe();
 
     const sessionParams: StripeSDK.Checkout.SessionCreateParams = {
       mode: args.mode,
-      line_items: [
-        {
-          price: args.priceId,
-          quantity: args.quantity ?? 1,
-        },
-      ],
       success_url: args.successUrl,
       cancel_url: args.cancelUrl,
       metadata: args.metadata || {},
     };
+    if (args.mode !== "setup") {
+      sessionParams.line_items = [
+        {
+          price: args.priceId,
+          quantity: args.quantity ?? 1,
+        },
+      ];
+    }
 
     if (args.customerId) {
       sessionParams.customer = args.customerId;
@@ -338,9 +329,11 @@ export class StripeSubscriptions {
    * Get or create a Stripe customer for a user.
    *
    * Looks for a customer linked to `userId`, then for one linked through the
-   * user's subscriptions or payments, then for an unclaimed customer with the
-   * same email. Customers deleted in Stripe are never returned, and a
-   * customer that belongs to a different user is never matched by email.
+   * user's subscriptions or payments. With `matchByEmail`, it then reuses an
+   * unclaimed customer with the same email and links it to the user. Only
+   * enable that if your auth provider verifies email addresses, or anyone can
+   * claim a customer by signing up with its email. Customers deleted in Stripe
+   * are never returned.
    */
   async getOrCreateCustomer(
     ctx: ActionCtx,
@@ -348,6 +341,7 @@ export class StripeSubscriptions {
       userId: string;
       email?: string;
       name?: string;
+      matchByEmail?: boolean;
     },
   ) {
     const existingByUserId = await ctx.runQuery(
@@ -383,7 +377,7 @@ export class StripeSubscriptions {
       }
     }
 
-    if (args.email) {
+    if (args.matchByEmail && args.email) {
       const existingByEmail = await ctx.runQuery(
         this.component.public.getCustomerByEmail,
         { email: args.email },
@@ -857,6 +851,25 @@ function getInvoiceMetadata(invoice: StripeSDK.Invoice) {
     return invoiceMetadata;
   }
   return invoice.parent?.subscription_details?.metadata || {};
+}
+
+const ENDIVE_API_VERSION_DATE = "2026-09-30";
+
+function assertNoPaymentMethodTypes(
+  params: object | undefined,
+  configuredApiVersion: StripeApiVersion | undefined,
+) {
+  if (!params || !("payment_method_types" in params)) return;
+  const apiVersion =
+    configuredApiVersion === undefined
+      ? StripeSDK.API_VERSION
+      : configuredApiVersion;
+  if (typeof apiVersion === "string" && apiVersion >= ENDIVE_API_VERSION_DATE) {
+    throw new Error(
+      "Stripe removed `payment_method_types` from Checkout Sessions in API version 2026-09-30.endive. " +
+        "Pass `allowed_payment_method_types` in `params` instead, or leave it out to use dynamic payment methods.",
+    );
+  }
 }
 
 function isNonHostedCheckoutUiMode(

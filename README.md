@@ -7,7 +7,7 @@ into your Convex application.
 
 [![npm version](https://badge.fury.io/js/@convex-dev%2Fstripe.svg)](https://badge.fury.io/js/@convex-dev%2Fstripe)
 
-Requires Node.js 18 or later, matching the Stripe Node SDK v22 runtime
+Requires Node.js 20 or later, matching the Stripe Node SDK v23 runtime
 requirement.
 
 ## Features
@@ -97,7 +97,7 @@ const http = httpRouter();
 // Register Stripe webhook handler at /stripe/webhook
 registerRoutes(http, components.stripe, {
   webhookPath: "/stripe/webhook",
-  apiVersion: "2026-04-22.dahlia", // Optional
+  apiVersion: "2026-10-28.endive", // Optional
 });
 
 export default http;
@@ -183,9 +183,13 @@ import { StripeSubscriptions } from "@convex-dev/stripe";
 
 const stripeClient = new StripeSubscriptions(components.stripe, {
   STRIPE_SECRET_KEY: "sk_...", // Optional, defaults to process.env.STRIPE_SECRET_KEY
-  apiVersion: "2026-04-22.dahlia", // Optional Stripe API version
+  apiVersion: "2026-10-28.endive", // Optional Stripe API version
 });
 ```
+
+Without `apiVersion`, API calls use the version pinned by the installed Stripe
+SDK, which changes when the SDK's major version changes. Set `apiVersion` here
+and in `registerRoutes` to control when you upgrade.
 
 #### Methods
 
@@ -227,6 +231,25 @@ argument. For non-hosted Checkout UI modes, the component omits `successUrl` and
 `cancelUrl` from the Stripe request and expects redirect behavior to be supplied
 through Stripe-supported params such as `return_url`.
 
+On API version `2026-09-30.endive` and later, Stripe rejects
+`payment_method_types`, so `createCheckoutSession` throws if `params` includes
+it. Use `allowed_payment_method_types`, or leave it out to use dynamic payment
+methods.
+
+To save a payment method without charging, use `mode: "setup"` without a
+`priceId`. Stripe needs `params.currency` in setup mode unless you set
+`params.allowed_payment_method_types`:
+
+```typescript
+await stripeClient.createCheckoutSession(ctx, {
+  mode: "setup",
+  customerId: "cus_...",
+  successUrl: "https://...",
+  cancelUrl: "https://...",
+  params: { currency: "usd" },
+});
+```
+
 ### getOrCreateCustomer
 
 ```typescript
@@ -234,14 +257,19 @@ const { customerId, isNew } = await stripeClient.getOrCreateCustomer(ctx, {
   userId: identity.subject,
   email: identity.email, // Optional
   name: identity.name, // Optional
+  matchByEmail: false, // Optional, default false
 });
 ```
 
 Returns the customer linked to `userId`, or the customer on the user's
-subscriptions or payments. If there is none, it reuses a customer with the same
-email only when that customer isn't linked to any user yet, and links it to this
-user. Otherwise it creates a new customer with `metadata.userId` set. Customers
-deleted in Stripe are never returned.
+subscriptions or payments. Otherwise it creates a new customer with
+`metadata.userId` set. Customers deleted in Stripe are never returned.
+
+With `matchByEmail: true`, it first reuses a customer with the same email that
+isn't linked to any user yet, and links it to this user. Only turn this on if
+your auth provider verifies email addresses. Otherwise someone can sign up with
+another person's email and take over their Stripe customer, including saved
+payment methods and invoices.
 
 ### Component Queries
 

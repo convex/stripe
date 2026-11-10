@@ -18,7 +18,7 @@ authentication.
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - A [Convex](https://convex.dev) account
 - A [Stripe](https://stripe.com) account (test mode)
 - A [Clerk](https://clerk.com) account

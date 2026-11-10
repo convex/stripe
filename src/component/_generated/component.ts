@@ -83,13 +83,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
-      handleInvoicePaid: FunctionReference<
-        "mutation",
-        "internal",
-        { amountPaid: number; stripeInvoiceId: string },
-        null,
-        Name
-      >;
       handleInvoicePaymentFailed: FunctionReference<
         "mutation",
         "internal",
@@ -156,18 +149,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           stripeSubscriptionId: string;
         },
         null,
-        Name
-      >;
-      listSubscriptionsWithCreationTime: FunctionReference<
-        "query",
-        "internal",
-        { stripeCustomerId: string },
-        Array<{
-          _creationTime: number;
-          status: string;
-          stripeCustomerId: string;
-          stripeSubscriptionId: string;
-        }>,
         Name
       >;
       updatePaymentCustomer: FunctionReference<
@@ -492,13 +473,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           stripeSubscriptionId: string;
           userId?: string;
         },
-        null,
-        Name
-      >;
-      updateSubscriptionQuantity: FunctionReference<
-        "action",
-        "internal",
-        { quantity: number; stripeSubscriptionId: string },
         null,
         Name
       >;
