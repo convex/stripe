@@ -110,6 +110,14 @@ export type RegisterRoutesConfig = {
   ) => void | Promise<void>;
 
   /**
+   * Skip events whose ID the component has already processed. Defaults to
+   * true. Resending an event from the Stripe Dashboard or CLI reuses its ID,
+   * so set this to false while you replay events you want handled again. When
+   * false, the route neither checks nor records event IDs.
+   */
+  deduplicateEvents?: boolean;
+
+  /**
    * Stripe webhook secret for signature verification.
    * Defaults to process.env.STRIPE_WEBHOOK_SECRET
    */

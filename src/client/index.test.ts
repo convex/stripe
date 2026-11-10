@@ -236,6 +236,50 @@ describe("StripeSubscriptions client", () => {
     });
   });
 
+  test("updateSubscriptionMetadata writes to Stripe, then syncs the result", async () => {
+    stripeMocks.updateSubscription.mockResolvedValueOnce({
+      id: "sub_meta",
+      customer: "cus_meta",
+      status: "active",
+      cancel_at_period_end: false,
+      cancel_at: null,
+      metadata: { userId: "user_meta", orgId: "org_meta", seats: "5" },
+      items: {
+        data: [
+          {
+            current_period_end: 1_800_000_000,
+            quantity: 5,
+            price: { id: "price_meta" },
+          },
+        ],
+      },
+    });
+    const ctx = {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue(null),
+      runQuery: vi.fn(),
+    };
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.updateSubscriptionMetadata(ctx, {
+      stripeSubscriptionId: "sub_meta",
+      metadata: { orgId: "org_meta", seats: "5" },
+    });
+
+    expect(stripeMocks.updateSubscription).toHaveBeenCalledWith("sub_meta", {
+      metadata: { orgId: "org_meta", seats: "5" },
+    });
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleSubscriptionUpdated,
+      expect.objectContaining({
+        stripeSubscriptionId: "sub_meta",
+        metadata: { userId: "user_meta", orgId: "org_meta", seats: "5" },
+      }),
+    );
+  });
+
   // What the component returns when a user has no customer, subscriptions,
   // or payments, followed by `getCustomer` results for each created customer.
   function newUserCtx(createdCustomers: unknown[]) {
@@ -785,7 +829,10 @@ describe("registerRoutes", () => {
       new Error("Object: {email: leak@example.com}"),
       { raw: { headers: { "request-id": "req_leak" } } },
     );
-    const ctx = { runMutation: vi.fn().mockRejectedValue(mutationError) };
+    const ctx = {
+      runQuery: vi.fn().mockResolvedValue(false),
+      runMutation: vi.fn().mockRejectedValue(mutationError),
+    };
     const onError = vi.fn();
     const onEvent = vi.fn();
     const handler = getWebhookHandler({
@@ -1091,6 +1138,7 @@ describe("processEvent", () => {
       components.stripe,
       {
         type: "customer.subscription.created",
+        created: 1_800_000_123,
         data: {
           object: {
             id: "sub_expanded",
@@ -1117,6 +1165,7 @@ describe("processEvent", () => {
     expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
       stripeSubscriptionId: "sub_expanded",
       stripeCustomerId: "cus_expanded",
+      eventCreated: 1_800_000_123,
     });
   });
 });

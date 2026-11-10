@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
-import { expect, test } from "vitest";
-import { api } from "./_generated/api.js";
+import { expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import { modules } from "./setup.test.js";
 
@@ -1090,4 +1090,215 @@ test("a cancelled subscription still accepts a canceled update", async () => {
 
   expect(subscription?.status).toBe("canceled");
   expect(subscription?.quantity).toBe(3);
+});
+
+async function updateSubscriptionAt(
+  t: ReturnType<typeof convexTest>,
+  status: string,
+  eventCreated: number,
+) {
+  await t.mutation(api.private.handleSubscriptionUpdated, {
+    stripeSubscriptionId: "sub_ordered",
+    stripeCustomerId: "cus_ordered",
+    status,
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_ordered",
+    eventCreated,
+  });
+}
+
+/** Reads the field from storage, since the public queries don't return it. */
+async function storedLastEventCreated(
+  t: ReturnType<typeof convexTest>,
+  table: "customers" | "subscriptions",
+) {
+  const documents = await t.run((ctx) => ctx.db.query(table).collect());
+  expect(documents).toHaveLength(1);
+  return documents[0].lastEventCreated;
+}
+
+test("subscription events older than the last applied one are ignored", async () => {
+  const t = convexTest(schema, modules);
+
+  await updateSubscriptionAt(t, "active", 100);
+  await updateSubscriptionAt(t, "past_due", 300);
+  await updateSubscriptionAt(t, "active", 200);
+
+  const afterStale = await t.query(api.public.getSubscription, {
+    stripeSubscriptionId: "sub_ordered",
+  });
+  expect(afterStale?.status).toBe("past_due");
+
+  await updateSubscriptionAt(t, "active", 400);
+  const afterNewer = await t.query(api.public.getSubscription, {
+    stripeSubscriptionId: "sub_ordered",
+  });
+  expect(afterNewer?.status).toBe("active");
+  expect(await storedLastEventCreated(t, "subscriptions")).toBe(400);
+});
+
+test("updates without an event timestamp still apply", async () => {
+  const t = convexTest(schema, modules);
+
+  await updateSubscriptionAt(t, "active", 300);
+  await t.mutation(api.private.handleSubscriptionUpdated, {
+    stripeSubscriptionId: "sub_ordered",
+    status: "active",
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: true,
+  });
+
+  const subscription = await t.query(api.public.getSubscription, {
+    stripeSubscriptionId: "sub_ordered",
+  });
+  expect(subscription?.cancelAtPeriodEnd).toBe(true);
+  expect(await storedLastEventCreated(t, "subscriptions")).toBe(300);
+});
+
+test("customer and subscription queries leave out lastEventCreated", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_internal",
+    email: "internal@example.com",
+    metadata: { userId: "user_internal" },
+    eventCreated: 100,
+  });
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId: "sub_internal",
+    stripeCustomerId: "cus_internal",
+    status: "active",
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_internal",
+    metadata: { userId: "user_internal", orgId: "org_internal" },
+    eventCreated: 100,
+  });
+  expect(await storedLastEventCreated(t, "customers")).toBe(100);
+  expect(await storedLastEventCreated(t, "subscriptions")).toBe(100);
+
+  // Each query's `returns` validator also rejects the field, so a query that
+  // forgot to drop it would throw here.
+  const documents = [
+    await t.query(api.public.getCustomer, {
+      stripeCustomerId: "cus_internal",
+    }),
+    await t.query(api.public.getCustomerByEmail, {
+      email: "internal@example.com",
+    }),
+    await t.query(api.public.getCustomerByUserId, { userId: "user_internal" }),
+    await t.query(api.public.getSubscription, {
+      stripeSubscriptionId: "sub_internal",
+    }),
+    await t.query(api.public.getSubscriptionByOrgId, { orgId: "org_internal" }),
+    ...(await t.query(api.public.listSubscriptions, {
+      stripeCustomerId: "cus_internal",
+    })),
+    ...(await t.query(api.public.listSubscriptionsByOrgId, {
+      orgId: "org_internal",
+    })),
+    ...(await t.query(api.public.listSubscriptionsByUserId, {
+      userId: "user_internal",
+    })),
+  ];
+
+  expect(documents).toHaveLength(8);
+  for (const document of documents) {
+    expect(document).not.toBeNull();
+    expect(document).not.toHaveProperty("lastEventCreated");
+  }
+});
+
+test("customer events older than the last applied one are ignored", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleCustomerCreated, {
+    stripeCustomerId: "cus_ordered",
+    email: "first@example.com",
+    eventCreated: 100,
+  });
+  await t.mutation(api.private.handleCustomerUpdated, {
+    stripeCustomerId: "cus_ordered",
+    email: "newest@example.com",
+    eventCreated: 300,
+  });
+  await t.mutation(api.private.handleCustomerUpdated, {
+    stripeCustomerId: "cus_ordered",
+    email: "stale@example.com",
+    eventCreated: 200,
+  });
+
+  const customer = await t.query(api.public.getCustomer, {
+    stripeCustomerId: "cus_ordered",
+  });
+  expect(customer?.email).toBe("newest@example.com");
+});
+
+test("processed webhook events are recorded once and pruned after 30 days", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const t = convexTest(schema, modules);
+    const now = Date.UTC(2026, 10, 3);
+
+    vi.setSystemTime(now - 31 * 24 * 60 * 60 * 1000);
+    await t.mutation(api.private.markWebhookEventProcessed, {
+      stripeEventId: "evt_old",
+      type: "invoice.paid",
+      created: 1_700_000_000,
+    });
+
+    vi.setSystemTime(now);
+    for (let i = 0; i < 2; i++) {
+      await t.mutation(api.private.markWebhookEventProcessed, {
+        stripeEventId: "evt_recent",
+        type: "invoice.paid",
+        created: 1_800_000_000,
+      });
+    }
+    expect(
+      await t.run((ctx) => ctx.db.query("webhook_events").collect()),
+    ).toHaveLength(2);
+
+    await t.mutation(internal.private.pruneWebhookEvents, {});
+
+    expect(
+      await t.query(api.private.isWebhookEventProcessed, {
+        stripeEventId: "evt_old",
+      }),
+    ).toBe(false);
+    expect(
+      await t.query(api.private.isWebhookEventProcessed, {
+        stripeEventId: "evt_recent",
+      }),
+    ).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("linking a subscription to an org keeps the metadata mirrored from Stripe", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleSubscriptionCreated, {
+    stripeSubscriptionId: "sub_link",
+    stripeCustomerId: "cus_link",
+    status: "active",
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    priceId: "price_link",
+    metadata: { plan: "pro" },
+  });
+  await t.mutation(api.public.updateSubscriptionMetadata, {
+    stripeSubscriptionId: "sub_link",
+    orgId: "org_link",
+  });
+
+  const subscription = await t.query(api.public.getSubscription, {
+    stripeSubscriptionId: "sub_link",
+  });
+  expect(subscription).toMatchObject({
+    orgId: "org_link",
+    metadata: { plan: "pro" },
+  });
 });

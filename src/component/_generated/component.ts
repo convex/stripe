@@ -41,6 +41,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           email?: string;
+          eventCreated?: number;
           metadata?: any;
           name?: string;
           stripeCustomerId: string;
@@ -51,7 +52,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       handleCustomerDeleted: FunctionReference<
         "mutation",
         "internal",
-        { stripeCustomerId: string },
+        { eventCreated?: number; stripeCustomerId: string },
         null,
         Name
       >;
@@ -60,6 +61,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           email?: string;
+          eventCreated?: number;
           metadata?: any;
           name?: string;
           stripeCustomerId: string;
@@ -112,6 +114,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
+          eventCreated?: number;
           metadata?: any;
           priceId: string;
           quantity?: number;
@@ -129,6 +132,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd?: boolean;
           currentPeriodEnd?: number;
+          eventCreated?: number;
           stripeSubscriptionId: string;
         },
         null,
@@ -141,6 +145,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
           currentPeriodEnd: number;
+          eventCreated?: number;
           metadata?: any;
           priceId?: string;
           quantity?: number;
@@ -148,6 +153,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           stripeCustomerId?: string;
           stripeSubscriptionId: string;
         },
+        null,
+        Name
+      >;
+      isWebhookEventProcessed: FunctionReference<
+        "query",
+        "internal",
+        { stripeEventId: string },
+        boolean,
+        Name
+      >;
+      markWebhookEventProcessed: FunctionReference<
+        "mutation",
+        "internal",
+        { created: number; stripeEventId: string; type: string },
         null,
         Name
       >;
@@ -468,7 +487,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
-          metadata: any;
+          metadata?: any;
           orgId?: string;
           stripeSubscriptionId: string;
           userId?: string;

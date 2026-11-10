@@ -1,17 +1,30 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
-import schema from "./schema.js";
+import schema, { vCustomer, vSubscription } from "./schema.js";
 
 // ============================================================================
 // VALIDATOR HELPERS
 // ============================================================================
 
 // Reusable validators that omit system fields (_id, _creationTime)
-const customerValidator = schema.tables.customers.validator;
-const subscriptionValidator = schema.tables.subscriptions.validator;
+const customerValidator = vCustomer;
+const subscriptionValidator = vSubscription;
 const checkoutSessionValidator = schema.tables.checkout_sessions.validator;
 const paymentValidator = schema.tables.payments.validator;
 const invoiceValidator = schema.tables.invoices.validator;
+
+/** Drops the system fields and the component's webhook-ordering field. */
+function withoutInternalFields<
+  T extends { _id: unknown; _creationTime: number; lastEventCreated?: number },
+>(document: T) {
+  const {
+    _id,
+    _creationTime,
+    lastEventCreated: _lastEventCreated,
+    ...data
+  } = document;
+  return data;
+}
 
 // ============================================================================
 // PUBLIC QUERIES
@@ -30,9 +43,7 @@ export const getCustomer = query({
         q.eq("stripeCustomerId", args.stripeCustomerId),
       )
       .unique();
-    if (!customer) return null;
-    const { _id, _creationTime, ...data } = customer;
-    return data;
+    return customer ? withoutInternalFields(customer) : null;
   },
 });
 
@@ -48,8 +59,8 @@ export const getCustomerByEmail = query({
       .query("customers")
       .withIndex("by_email", (q) => q.eq("email", args.email))
       .order("desc");
-    for await (const { _id, _creationTime, ...data } of customers) {
-      if (!data.deleted) return data;
+    for await (const customer of customers) {
+      if (!customer.deleted) return withoutInternalFields(customer);
     }
     return null;
   },
@@ -67,8 +78,8 @@ export const getCustomerByUserId = query({
       .query("customers")
       .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
       .order("desc");
-    for await (const { _id, _creationTime, ...data } of customers) {
-      if (!data.deleted) return data;
+    for await (const customer of customers) {
+      if (!customer.deleted) return withoutInternalFields(customer);
     }
     return null;
   },
@@ -87,9 +98,7 @@ export const getSubscription = query({
         q.eq("stripeSubscriptionId", args.stripeSubscriptionId),
       )
       .unique();
-    if (!subscription) return null;
-    const { _id, _creationTime, ...data } = subscription;
-    return data;
+    return subscription ? withoutInternalFields(subscription) : null;
   },
 });
 
@@ -106,7 +115,7 @@ export const listSubscriptions = query({
         q.eq("stripeCustomerId", args.stripeCustomerId),
       )
       .collect();
-    return subscriptions.map(({ _id, _creationTime, ...data }) => data);
+    return subscriptions.map(withoutInternalFields);
   },
 });
 
@@ -147,9 +156,7 @@ export const getSubscriptionByOrgId = query({
         current = subscription;
       }
     }
-    if (!current) return null;
-    const { _id, _creationTime, ...data } = current;
-    return data;
+    return current ? withoutInternalFields(current) : null;
   },
 });
 
@@ -164,7 +171,7 @@ export const listSubscriptionsByOrgId = query({
       .query("subscriptions")
       .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
       .collect();
-    return subscriptions.map(({ _id, _creationTime, ...data }) => data);
+    return subscriptions.map(withoutInternalFields);
   },
 });
 
@@ -180,7 +187,7 @@ export const listSubscriptionsByUserId = query({
       .query("subscriptions")
       .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
       .collect();
-    return subscriptions.map(({ _id, _creationTime, ...data }) => data);
+    return subscriptions.map(withoutInternalFields);
   },
 });
 
@@ -385,14 +392,17 @@ export const createOrUpdateCustomer = mutation({
 });
 
 /**
- * Update subscription metadata for custom lookups.
- * You can provide orgId and userId for efficient indexed lookups,
- * and additional data in the metadata field.
+ * Link a subscription to an orgId or userId for indexed lookups. These links
+ * stay until Stripe metadata sets a different `orgId` or `userId`.
+ *
+ * `metadata` here only changes the copy in Convex, and the next Stripe webhook
+ * for the subscription replaces it. To change metadata, use
+ * `StripeSubscriptions.updateSubscriptionMetadata`, which writes to Stripe.
  */
 export const updateSubscriptionMetadata = mutation({
   args: {
     stripeSubscriptionId: v.string(),
-    metadata: v.any(),
+    metadata: v.optional(v.any()),
     orgId: v.optional(v.string()),
     userId: v.optional(v.string()),
   },
@@ -412,7 +422,7 @@ export const updateSubscriptionMetadata = mutation({
     }
 
     await ctx.db.patch("subscriptions", subscription._id, {
-      metadata: args.metadata,
+      ...(args.metadata !== undefined && { metadata: args.metadata }),
       ...(args.orgId !== undefined && { orgId: args.orgId }),
       ...(args.userId !== undefined && { userId: args.userId }),
     });
