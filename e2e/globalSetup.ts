@@ -14,6 +14,25 @@ declare module "vitest" {
 const execFileAsync = promisify(execFile);
 const LOCAL_WEBHOOK_SECRET = "whsec_e2e_local_signing_secret";
 
+// The events the component handles. Stripe CLI 1.55 and later exits unless
+// `listen` is told which events to forward; earlier versions forwarded all.
+const FORWARDED_EVENTS = [
+  "checkout.session.completed",
+  "customer.created",
+  "customer.updated",
+  "customer.deleted",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.created",
+  "invoice.finalized",
+  "invoice.updated",
+  "invoice.paid",
+  "invoice.payment_succeeded",
+  "invoice.payment_failed",
+  "payment_intent.succeeded",
+];
+
 /**
  * Runs the example app and the component on a local Convex backend. With
  * STRIPE_E2E_SECRET_KEY set, also forwards the Stripe test account's webhooks
@@ -60,6 +79,8 @@ export default async function setup(project: TestProject) {
       webhookSecret = stdout.trim();
       const listenArgs = [
         "listen",
+        "--events",
+        FORWARDED_EVENTS.join(","),
         "--forward-to",
         `${siteUrl}/stripe/webhook`,
       ];
@@ -68,9 +89,7 @@ export default async function setup(project: TestProject) {
       }
       const listener = startProcess("stripe", listenArgs, stripeEnv);
       processes.push(listener);
-      // The listener's output includes its signing secret, so it is never
-      // echoed on failure.
-      await waitForOutput(listener, /Ready!/, 60_000, { quiet: true });
+      await waitForOutput(listener, /Ready!/, 60_000);
     }
 
     await setConvexEnv("STRIPE_WEBHOOK_SECRET", webhookSecret);
@@ -176,18 +195,24 @@ function stopProcessGroup(child: ChildProcess) {
   }
 }
 
+// `stripe listen` prints its signing secret, and errors can echo the API key.
+function redactSecrets(output: string) {
+  return output
+    .replace(/whsec_\S+/g, "whsec_[redacted]")
+    .replace(/\b(sk|rk)_test_\w+/g, "$1_test_[redacted]");
+}
+
 function waitForOutput(
   child: OutputProcess,
   pattern: RegExp,
   timeoutMs: number,
-  options: { quiet?: boolean } = {},
 ) {
-  const name = child.spawnargs.slice(0, 3).join(" ");
+  const name = child.spawnargs.slice(0, 2).join(" ");
   return new Promise<void>((resolve, reject) => {
     const fail = (reason: string) => {
       clearTimeout(timer);
-      const output = options.quiet ? "" : `\n${child.output.join("")}`;
-      reject(new Error(`${name} ${reason}${output}`));
+      const output = redactSecrets(child.output.join(""));
+      reject(new Error(`${name} ${reason}\n${output}`));
     };
     const timer = setTimeout(
       () => fail(`did not become ready in ${timeoutMs}ms`),
