@@ -465,6 +465,38 @@ registerRoutes(http, components.stripe, {
 export default http;
 ```
 
+#### Reading the promotion code a customer used
+
+`params` on `createCheckoutSession` takes `allow_promotion_codes` and
+`discounts`. Stripe's `checkout.session.completed` payload only carries the IDs
+of the discounts that were applied, so fetch the session with the promotion code
+expanded in your handler:
+
+```typescript
+import Stripe from "stripe";
+
+registerRoutes(http, components.stripe, {
+  events: {
+    "checkout.session.completed": async (ctx, event) => {
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+      const session = await stripe.checkout.sessions.retrieve(
+        event.data.object.id,
+        { expand: ["discounts.promotion_code"] },
+      );
+      for (const discount of session.discounts ?? []) {
+        const promotionCode = discount.promotion_code;
+        if (promotionCode && typeof promotionCode !== "string") {
+          console.log("Promotion code used:", promotionCode.code);
+        }
+      }
+    },
+  },
+});
+```
+
+The component doesn't store discounts, so it doesn't make this call for every
+checkout.
+
 If processing an event fails, the route responds with a 500 so Stripe retries
 the delivery. The component only logs a fixed message plus the event ID and
 type, because errors can contain the raw payload, the signature header, or
