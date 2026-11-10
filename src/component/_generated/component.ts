@@ -24,6 +24,17 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     private: {
+      handleChargeRefunded: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          amountRefunded: number;
+          refunded: boolean;
+          stripePaymentIntentId: string;
+        },
+        null,
+        Name
+      >;
       handleCheckoutSessionCompleted: FunctionReference<
         "mutation",
         "internal",
@@ -259,10 +270,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { stripePaymentIntentId: string },
         {
           amount: number;
+          amountRefunded?: number;
           created: number;
           currency: string;
           metadata?: any;
           orgId?: string;
+          refunded?: boolean;
           status: string;
           stripeCustomerId?: string;
           stripePaymentIntentId: string;
@@ -381,10 +394,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { stripeCustomerId: string },
         Array<{
           amount: number;
+          amountRefunded?: number;
           created: number;
           currency: string;
           metadata?: any;
           orgId?: string;
+          refunded?: boolean;
           status: string;
           stripeCustomerId?: string;
           stripePaymentIntentId: string;
@@ -398,10 +413,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { orgId: string },
         Array<{
           amount: number;
+          amountRefunded?: number;
           created: number;
           currency: string;
           metadata?: any;
           orgId?: string;
+          refunded?: boolean;
           status: string;
           stripeCustomerId?: string;
           stripePaymentIntentId: string;
@@ -415,10 +432,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { userId: string },
         Array<{
           amount: number;
+          amountRefunded?: number;
           created: number;
           currency: string;
           metadata?: any;
           orgId?: string;
+          refunded?: boolean;
           status: string;
           stripeCustomerId?: string;
           stripePaymentIntentId: string;

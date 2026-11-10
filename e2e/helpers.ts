@@ -39,6 +39,8 @@ export type Payment = {
   stripePaymentIntentId: string;
   stripeCustomerId?: string;
   amount: number;
+  amountRefunded?: number;
+  refunded?: boolean;
   userId?: string;
 };
 

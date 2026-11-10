@@ -667,6 +667,42 @@ export const handlePaymentIntentSucceeded = mutation({
   },
 });
 
+export const handleChargeRefunded = mutation({
+  args: {
+    stripePaymentIntentId: v.string(),
+    amountRefunded: v.number(),
+    refunded: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const payment = await ctx.db
+      .query("payments")
+      .withIndex("by_stripe_payment_intent_id", (q) =>
+        q.eq("stripePaymentIntentId", args.stripePaymentIntentId),
+      )
+      .unique();
+
+    // Subscription charges aren't stored as payments, so there is nothing to
+    // mark for them.
+    if (!payment) return null;
+
+    // Each event carries the running total, so the largest one is the newest
+    // even when two partial refunds arrive out of order.
+    const patch = {
+      amountRefunded: Math.max(
+        payment.amountRefunded ?? 0,
+        args.amountRefunded,
+      ),
+      refunded: (payment.refunded ?? false) || args.refunded,
+    };
+    if (patchChangesDocument(payment, patch)) {
+      await ctx.db.patch("payments", payment._id, patch);
+    }
+
+    return null;
+  },
+});
+
 export const updatePaymentCustomer = mutation({
   args: {
     stripePaymentIntentId: v.string(),

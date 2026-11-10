@@ -133,6 +133,7 @@ npx convex dev --once
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
    - `payment_intent.succeeded`
+   - `charge.refunded`
    - `payment_intent.payment_failed`
    - `invoice.created`
    - `invoice.finalized`
