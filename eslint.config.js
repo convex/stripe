@@ -92,4 +92,9 @@ export default [
       ],
     },
   },
+  // The entry point renders the app and exports nothing.
+  {
+    files: ["example/src/main.tsx"],
+    rules: { "react-refresh/only-export-components": "off" },
+  },
 ];
