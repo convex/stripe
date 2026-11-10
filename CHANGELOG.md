@@ -78,6 +78,10 @@ Other changes:
   component had never stored. `getOrCreateCustomer`, `getCustomerByUserId`, and
   `getCustomerByEmail` skip them, so a user whose customer was deleted gets a
   new one instead of a checkout error.
+- `getOrCreateCustomer` also replaces a customer that was deleted within 24
+  hours of being created. Stripe replays the original response for the
+  idempotency key during that time, which used to hand the deleted customer back
+  and fail checkout with "No such customer".
 - Customer documents have a new optional `deleted` field, and `getCustomer`
   still returns deleted customers. If you wrote your own `returns` validator for
   customer data, add `deleted: v.optional(v.boolean())` to it.
