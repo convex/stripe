@@ -15,9 +15,11 @@ Breaking changes:
   endive API versions, where Stripe rejects it. Use
   `allowed_payment_method_types` instead. Apps that pin an older `apiVersion`
   can still pass it.
-- `getOrCreateCustomer` only reuses a customer by email when you pass
-  `matchByEmail: true`. Leave it off unless your auth provider verifies email
-  addresses.
+- `getOrCreateCustomer` no longer returns a customer that belongs to another
+  user. It only reuses a customer by email when you pass `matchByEmail: true`,
+  and then only one that has no `userId`, which it links to the user in Stripe
+  and in Convex. Leave `matchByEmail` off unless your auth provider verifies
+  email addresses.
 - Remove `public.updateSubscriptionQuantity`, which always threw. Use
   `StripeSubscriptions.updateSubscriptionQuantity()`.
 - Remove the unused `private.handleInvoicePaid` and
@@ -25,34 +27,7 @@ Breaking changes:
 - Remove the `@convex-dev/stripe/react` entrypoint, which only exported a
   placeholder hook, and the `react` peer dependency.
 
-Other changes:
-
-- `createCheckoutSession` supports `mode: "setup"` without a `priceId` and no
-  longer sends a line item in setup mode.
-- `CreateCheckoutSessionArgs` is exported.
-- The webhook route records processed event IDs in a new `webhook_events` table
-  and acknowledges redeliveries without running the sync or your handlers again.
-  It logs each one it skips. A daily component cron deletes entries after 30
-  days.
-- Resending an event from the Stripe Dashboard or CLI reuses its ID, so an event
-  that was already processed is skipped as well. Pass `deduplicateEvents: false`
-  to `registerRoutes` while you replay events.
-- Customers and subscriptions track the `created` time of the newest event
-  applied (`lastEventCreated`) and ignore older events that arrive late. The
-  public queries don't return this field.
-- Refunds of one-time payments are synced. `charge.refunded` sets the new
-  optional `amountRefunded` and `refunded` fields on the payment, and its
-  `status` stays as Stripe reports it. Add `charge.refunded` to your webhook
-  endpoint's events to turn this on. If you wrote your own `returns` validator
-  for payment data, add both fields or use `vPayment`.
-- Invoice webhooks skip writes that change nothing, which cuts down the write
-  conflicts when several events for one invoice arrive together (#24).
-- New `StripeSubscriptions.updateSubscriptionMetadata()` writes metadata to
-  Stripe and syncs it. The component's `updateSubscriptionMetadata` mutation now
-  takes optional `metadata`, so it can link an `orgId` or `userId` without
-  replacing the metadata mirrored from Stripe.
-
-## 0.1.8 (unreleased)
+Fixes:
 
 - Fix subscription renewals being recorded as one-time payments. Stripe removed
   `PaymentIntent.invoice` in API version `2025-03-31.basil`, so
@@ -76,9 +51,6 @@ Other changes:
 - Invoices without a customer are skipped instead of failing validation, and
   expanded customer, subscription, and invoice objects in event payloads are
   read correctly.
-- `getOrCreateCustomer` no longer returns a customer that belongs to another
-  user. An email match is only reused when that customer has no `userId`, and
-  the customer is then linked to the user in Stripe and in Convex.
 - Customers deleted in Stripe are marked `deleted: true`, including ones the
   component had never stored. `getOrCreateCustomer`, `getCustomerByUserId`, and
   `getCustomerByEmail` skip them, so a user whose customer was deleted gets a
@@ -97,14 +69,41 @@ Other changes:
   start syncing.
 - `getSubscriptionByOrgId` returns the org's live subscription (active or
   trialing first) instead of the oldest one, which was often canceled.
-- Export `vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, and
-  `vInvoice` for `returns` validators on queries that pass component data
-  through.
 - The example app no longer ships public functions without auth checks. If you
   copied `linkSubscriptionToOrg`, `getCustomerData`, `getSubscriptionInfo`,
   `getOrgSubscription`, `getOrgPayments`, or `getOrgInvoices` from it, add an
   authorization check to your copy. `linkSubscriptionToOrg` let any caller
   attach any subscription to themselves and then cancel it.
+
+Other changes:
+
+- `createCheckoutSession` supports `mode: "setup"` without a `priceId` and no
+  longer sends a line item in setup mode.
+- `CreateCheckoutSessionArgs` is exported.
+- Export `vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, and
+  `vInvoice` for `returns` validators on queries that pass component data
+  through.
+- The webhook route records processed event IDs in a new `webhook_events` table
+  and acknowledges redeliveries without running the sync or your handlers again.
+  It logs each one it skips. A daily component cron deletes entries after 30
+  days.
+- Resending an event from the Stripe Dashboard or CLI reuses its ID, so an event
+  that was already processed is skipped as well. Pass `deduplicateEvents: false`
+  to `registerRoutes` while you replay events.
+- Customers and subscriptions track the `created` time of the newest event
+  applied (`lastEventCreated`) and ignore older events that arrive late. The
+  public queries don't return this field.
+- Refunds of one-time payments are synced. `charge.refunded` sets the new
+  optional `amountRefunded` and `refunded` fields on the payment, and its
+  `status` stays as Stripe reports it. Add `charge.refunded` to your webhook
+  endpoint's events to turn this on. If you wrote your own `returns` validator
+  for payment data, add both fields or use `vPayment`.
+- Invoice webhooks skip writes that change nothing, which cuts down the write
+  conflicts when several events for one invoice arrive together (#24).
+- New `StripeSubscriptions.updateSubscriptionMetadata()` writes metadata to
+  Stripe and syncs it. The component's `updateSubscriptionMetadata` mutation now
+  takes optional `metadata`, so it can link an `orgId` or `userId` without
+  replacing the metadata mirrored from Stripe.
 
 ## 0.1.7
 
