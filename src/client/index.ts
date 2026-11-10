@@ -622,8 +622,9 @@ export function registerRoutes(
         // Call custom event handler if provided
         const eventType = event.type;
         const customHandler:
-          | ((ctx: any, event: any) => Promise<void>)
-          | undefined = eventHandlers[eventType] as any;
+          ((ctx: any, event: any) => Promise<void>) | undefined = eventHandlers[
+          eventType
+        ] as any;
         if (customHandler) {
           await customHandler(ctx, event);
         }

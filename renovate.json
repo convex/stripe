@@ -18,9 +18,14 @@
     {
       "matchUpdateTypes": ["major"],
       "automerge": false
+    },
+    {
+      "description": "config:best-practices lowers the wait for npm packages to 3 days. .npmrc refuses anything newer than 7, so a younger version breaks the lockfile update.",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "14 days"
     }
   ],
   "constraints": {
-    "npm": "^10"
+    "npm": "^11"
   }
 }

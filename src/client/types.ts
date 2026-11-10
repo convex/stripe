@@ -11,9 +11,7 @@ import type StripeSDK from "stripe";
 // Type utils follow
 type StripeClientConfig = ConstructorParameters<typeof StripeSDK>[1];
 export type StripeApiVersion =
-  | NonNullable<StripeClientConfig>["apiVersion"]
-  | (string & {})
-  | null;
+  NonNullable<StripeClientConfig>["apiVersion"] | (string & {}) | null;
 
 /**
  * Arguments for `StripeSubscriptions.createCheckoutSession`. Setup mode saves a
