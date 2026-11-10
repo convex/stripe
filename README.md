@@ -47,7 +47,8 @@ export default app;
 
 ### 3. Set Up Environment Variables
 
-Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings → Environment Variables:
+Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings →
+Environment Variables:
 
 | Variable                | Description                                             |
 | ----------------------- | ------------------------------------------------------- |
@@ -56,13 +57,15 @@ Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings 
 
 ### 4. Configure Stripe Webhooks
 
-1. Go to [Stripe Dashboard → Developers → Webhooks](https://dashboard.stripe.com/test/webhooks)
+1. Go to
+   [Stripe Dashboard → Developers → Webhooks](https://dashboard.stripe.com/test/webhooks)
 2. Click **"Add endpoint"**
 3. Enter your webhook URL:
    ```
    https://<your-convex-deployment>.convex.site/stripe/webhook
    ```
-   (Find your deployment name in the Convex dashboard - it's the part before `.convex.cloud` in your URL)
+   (Find your deployment name in the Convex dashboard - it's the part before
+   `.convex.cloud` in your URL)
 4. Select these events:
    - `checkout.session.completed`
    - `customer.created`
@@ -77,7 +80,6 @@ Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings 
    - `invoice.paid`
    - `invoice.payment_failed`
    - `payment_intent.succeeded`
-   - `payment_intent.payment_failed`
 5. Click **"Add endpoint"**
 6. Copy the **Signing secret** and add it as `STRIPE_WEBHOOK_SECRET` in Convex
 
@@ -187,34 +189,34 @@ const stripeClient = new StripeSubscriptions(components.stripe, {
 
 #### Methods
 
-| Method | Description |
-|--------|-------------|
-| `createCheckoutSession()` | Create a Stripe Checkout session |
-| `createCustomerPortalSession()` | Generate a Customer Portal URL |
-| `createCustomer()` | Create a new Stripe customer |
-| `getOrCreateCustomer()` | Get existing or create new customer |
-| `cancelSubscription()` | Cancel a subscription |
-| `reactivateSubscription()` | Reactivate a subscription set to cancel |
-| `updateSubscriptionQuantity()` | Update seat count |
+| Method                          | Description                             |
+| ------------------------------- | --------------------------------------- |
+| `createCheckoutSession()`       | Create a Stripe Checkout session        |
+| `createCustomerPortalSession()` | Generate a Customer Portal URL          |
+| `createCustomer()`              | Create a new Stripe customer            |
+| `getOrCreateCustomer()`         | Get existing or create new customer     |
+| `cancelSubscription()`          | Cancel a subscription                   |
+| `reactivateSubscription()`      | Reactivate a subscription set to cancel |
+| `updateSubscriptionQuantity()`  | Update seat count                       |
 
 ### createCheckoutSession
 
 ```typescript
 await stripeClient.createCheckoutSession(ctx, {
   priceId: "price_...",
-  customerId: "cus_...",           // Optional
-  mode: "subscription",             // "subscription" | "payment" | "setup"
+  customerId: "cus_...", // Optional
+  mode: "subscription", // "subscription" | "payment" | "setup"
   successUrl: "https://...",
   cancelUrl: "https://...",
-  quantity: 1,                      // Optional, default 1
-  metadata: {},                     // Optional, session metadata
-  subscriptionMetadata: {},         // Optional, attached to subscription
-  paymentIntentMetadata: {},        // Optional, attached to payment intent
+  quantity: 1, // Optional, default 1
+  metadata: {}, // Optional, session metadata
+  subscriptionMetadata: {}, // Optional, attached to subscription
+  paymentIntentMetadata: {}, // Optional, attached to payment intent
   params: {
     allow_promotion_codes: true,
     ui_mode: "embedded_page",
     return_url: "https://...",
-  },                                // Optional Stripe Checkout Session params
+  }, // Optional Stripe Checkout Session params
 });
 ```
 
@@ -237,9 +239,9 @@ const { customerId, isNew } = await stripeClient.getOrCreateCustomer(ctx, {
 
 Returns the customer linked to `userId`, or the customer on the user's
 subscriptions or payments. If there is none, it reuses a customer with the same
-email only when that customer isn't linked to any user yet, and links it to
-this user. Otherwise it creates a new customer with `metadata.userId` set.
-Customers deleted in Stripe are never returned.
+email only when that customer isn't linked to any user yet, and links it to this
+user. Otherwise it creates a new customer with `metadata.userId` set. Customers
+deleted in Stripe are never returned.
 
 ### Component Queries
 
@@ -248,10 +250,13 @@ Access data directly via the component's public queries:
 ```typescript
 import { query } from "./_generated/server";
 import { components } from "./_generated/api";
+import { vPayment, vSubscription } from "@convex-dev/stripe";
+import { v } from "convex/values";
 
 // List subscriptions for a user
 export const getUserSubscriptions = query({
   args: {},
+  returns: v.array(vSubscription),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
@@ -266,6 +271,7 @@ export const getUserSubscriptions = query({
 // List payments for a user
 export const getUserPayments = query({
   args: {},
+  returns: v.array(vPayment),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
@@ -277,43 +283,63 @@ export const getUserPayments = query({
 });
 ```
 
+`vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, and `vInvoice`
+match the documents these queries return. Use them in your `returns` validators
+so they stay in sync when the component adds fields.
+
+These queries return data for whatever ID you pass, so check that the signed-in
+user is allowed to see it before calling them, as the examples above do with
+`identity.subject`.
+
 ### Available Public Queries
 
-| Query                       | Arguments               | Description                       |
-| --------------------------- | ----------------------- | --------------------------------- |
-| `getCustomer`               | `stripeCustomerId`      | Get a customer by Stripe ID       |
-| `listSubscriptions`         | `stripeCustomerId`      | List subscriptions for a customer |
-| `listSubscriptionsByUserId` | `userId`                | List subscriptions for a user     |
-| `getSubscription`           | `stripeSubscriptionId`  | Get a subscription by ID          |
-| `getSubscriptionByOrgId`    | `orgId`                 | Get subscription for an org       |
-| `getPayment`                | `stripePaymentIntentId` | Get a payment by ID               |
-| `listPayments`              | `stripeCustomerId`      | List payments for a customer      |
-| `listPaymentsByUserId`      | `userId`                | List payments for a user          |
-| `listPaymentsByOrgId`       | `orgId`                 | List payments for an org          |
-| `listInvoices`              | `stripeCustomerId`      | List invoices for a customer      |
-| `listInvoicesByUserId`      | `userId`                | List invoices for a user          |
-| `listInvoicesByOrgId`       | `orgId`                 | List invoices for an org          |
+| Query                       | Arguments                 | Description                                     |
+| --------------------------- | ------------------------- | ----------------------------------------------- |
+| `getCustomer`               | `stripeCustomerId`        | Get a customer by Stripe ID                     |
+| `getCustomerByUserId`       | `userId`                  | Newest customer for a user, skipping deleted    |
+| `getCustomerByEmail`        | `email`                   | Newest customer with an email, skipping deleted |
+| `getSubscription`           | `stripeSubscriptionId`    | Get a subscription by ID                        |
+| `listSubscriptions`         | `stripeCustomerId`        | List subscriptions for a customer               |
+| `listSubscriptionsByUserId` | `userId`                  | List subscriptions for a user                   |
+| `listSubscriptionsByOrgId`  | `orgId`                   | List subscriptions for an org                   |
+| `getSubscriptionByOrgId`    | `orgId`                   | An org's live subscription, preferring active   |
+| `getPayment`                | `stripePaymentIntentId`   | Get a payment by ID                             |
+| `listPayments`              | `stripeCustomerId`        | List payments for a customer                    |
+| `listPaymentsByUserId`      | `userId`                  | List payments for a user                        |
+| `listPaymentsByOrgId`       | `orgId`                   | List payments for an org                        |
+| `listInvoices`              | `stripeCustomerId`        | List invoices for a customer                    |
+| `listInvoicesByUserId`      | `userId`                  | List invoices for a user                        |
+| `listInvoicesByOrgId`       | `orgId`                   | List invoices for an org                        |
+| `getCheckoutSession`        | `stripeCheckoutSessionId` | Get a completed checkout session by ID          |
+| `listCheckoutSessions`      | `stripeCustomerId`        | List completed checkout sessions for a customer |
+
+### Public Mutations
+
+| Mutation                     | Arguments                                               | Description                                               |
+| ---------------------------- | ------------------------------------------------------- | --------------------------------------------------------- |
+| `createOrUpdateCustomer`     | `stripeCustomerId`, `email?`, `name?`, `metadata?`      | Store a customer; `metadata.userId` links it to a user    |
+| `updateSubscriptionMetadata` | `stripeSubscriptionId`, `metadata`, `orgId?`, `userId?` | Link a subscription to an org or user for indexed lookups |
 
 ## Webhook Events
 
 The component automatically handles these Stripe webhook events:
 
-| Event                           | Action                              |
-| ------------------------------- | ----------------------------------- |
-| `customer.created`              | Creates customer record             |
-| `customer.updated`              | Updates customer record             |
-| `customer.deleted`              | Scrubs customer PII                 |
-| `customer.subscription.created` | Creates subscription record         |
-| `customer.subscription.updated` | Updates subscription record         |
-| `customer.subscription.deleted` | Marks subscription as canceled      |
-| `payment_intent.succeeded`      | Creates payment record              |
-| `payment_intent.payment_failed` | Updates payment status              |
-| `invoice.created`               | Creates invoice record              |
-| `invoice.finalized`             | Upserts invoice record              |
-| `invoice.updated`               | Mirrors invoice metadata changes    |
-| `invoice.paid`                  | Upserts invoice as paid             |
-| `invoice.payment_failed`        | Marks invoice as failed             |
-| `checkout.session.completed`    | Handles completed checkout sessions |
+| Event                           | Action                                                       |
+| ------------------------------- | ------------------------------------------------------------ |
+| `customer.created`              | Creates customer record                                      |
+| `customer.updated`              | Updates or creates customer record                           |
+| `customer.deleted`              | Scrubs customer PII and marks it deleted                     |
+| `customer.subscription.created` | Creates subscription record                                  |
+| `customer.subscription.updated` | Updates or creates subscription record                       |
+| `customer.subscription.deleted` | Marks subscription as canceled                               |
+| `payment_intent.succeeded`      | Creates payment record, skipping subscription payments       |
+| `invoice.created`               | Creates invoice record                                       |
+| `invoice.finalized`             | Upserts invoice record                                       |
+| `invoice.updated`               | Upserts invoice record, including metadata changes           |
+| `invoice.paid`                  | Upserts invoice as paid                                      |
+| `invoice.payment_succeeded`     | Upserts invoice record                                       |
+| `invoice.payment_failed`        | Keeps the invoice `open`; never downgrades a paid invoice    |
+| `checkout.session.completed`    | Records the session and syncs its first subscription invoice |
 
 ### Custom Webhook Handlers
 
@@ -329,9 +355,16 @@ const http = httpRouter();
 
 registerRoutes(http, components.stripe, {
   events: {
-    "customer.subscription.updated": async (ctx, event: Stripe.CustomerSubscriptionUpdatedEvent) => {
+    "customer.subscription.updated": async (
+      ctx,
+      event: Stripe.CustomerSubscriptionUpdatedEvent,
+    ) => {
       const subscription = event.data.object;
-      console.log("Subscription updated:", subscription.id, subscription.status);
+      console.log(
+        "Subscription updated:",
+        subscription.id,
+        subscription.status,
+      );
       // Add custom logic here
     },
   },
@@ -347,8 +380,8 @@ export default http;
 If processing an event fails, the route responds with a 500 so Stripe retries
 the delivery. The component only logs a fixed message plus the event ID and
 type, because errors can contain the raw payload, the signature header, or
-customer fields. To see the underlying error, pass `onError` and send it to
-your own logging or monitoring:
+customer fields. To see the underlying error, pass `onError` and send it to your
+own logging or monitoring:
 
 ```typescript
 registerRoutes(http, components.stripe, {
@@ -365,12 +398,14 @@ The component creates these tables in its namespace:
 
 ### customers
 
-| Field              | Type    | Description        |
-| ------------------ | ------- | ------------------ |
-| `stripeCustomerId` | string  | Stripe customer ID |
-| `email`            | string? | Customer email     |
-| `name`             | string? | Customer name      |
-| `metadata`         | object? | Custom metadata    |
+| Field              | Type     | Description                     |
+| ------------------ | -------- | ------------------------------- |
+| `stripeCustomerId` | string   | Stripe customer ID              |
+| `email`            | string?  | Customer email                  |
+| `name`             | string?  | Customer name                   |
+| `metadata`         | object?  | Custom metadata                 |
+| `userId`           | string?  | Linked user ID, from `metadata` |
+| `deleted`          | boolean? | `true` once deleted in Stripe   |
 
 ### subscriptions
 
@@ -383,6 +418,7 @@ The component creates these tables in its namespace:
 | `quantity`             | number? | Seat count                |
 | `currentPeriodEnd`     | number  | Period end timestamp      |
 | `cancelAtPeriodEnd`    | boolean | Will cancel at period end |
+| `cancelAt`             | number? | Scheduled cancel time     |
 | `userId`               | string? | Linked user ID            |
 | `orgId`                | string? | Linked org ID             |
 | `metadata`             | object? | Custom metadata           |
@@ -431,8 +467,8 @@ The component creates these tables in its namespace:
 Check out the full example app in the [`example/`](./example) directory:
 
 ```bash
-git clone https://github.com/get-convex/convex-stripe
-cd convex-stripe
+git clone https://github.com/get-convex/stripe
+cd stripe
 npm install
 npm run dev
 ```
