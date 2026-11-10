@@ -236,6 +236,68 @@ describe("StripeSubscriptions client", () => {
     });
   });
 
+  // What the component returns when a user has no customer, subscriptions,
+  // or payments, followed by `getCustomer` results for each created customer.
+  function newUserCtx(createdCustomers: unknown[]) {
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    for (const customer of createdCustomers) {
+      runQuery.mockResolvedValueOnce(customer);
+    }
+    return {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue("cus_ignored"),
+      runQuery,
+    };
+  }
+
+  test("getOrCreateCustomer replaces a deleted customer that Stripe replays for the idempotency key", async () => {
+    stripeMocks.createCustomer.mockReset();
+    stripeMocks.createCustomer
+      .mockResolvedValueOnce({ id: "cus_deleted_today" })
+      .mockResolvedValueOnce({ id: "cus_replacement" });
+    const ctx = newUserCtx([
+      { stripeCustomerId: "cus_deleted_today", deleted: true },
+      { stripeCustomerId: "cus_replacement" },
+    ]);
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_replayed",
+    });
+
+    expect(result).toEqual({ customerId: "cus_replacement", isNew: true });
+    expect(
+      stripeMocks.createCustomer.mock.calls.map(([, options]) => options),
+    ).toEqual([
+      { idempotencyKey: "create_customer_user_replayed" },
+      {
+        idempotencyKey: "create_customer_user_replayed_after_cus_deleted_today",
+      },
+    ]);
+  });
+
+  test("getOrCreateCustomer gives up when every customer Stripe returns is deleted", async () => {
+    stripeMocks.createCustomer.mockReset();
+    stripeMocks.createCustomer.mockResolvedValue({ id: "cus_always_deleted" });
+    const deleted = { stripeCustomerId: "cus_always_deleted", deleted: true };
+    const ctx = newUserCtx([deleted, deleted, deleted, deleted, deleted]);
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await expect(
+      client.getOrCreateCustomer(ctx, { userId: "user_stuck" }),
+    ).rejects.toThrow("have since been deleted");
+    expect(stripeMocks.createCustomer).toHaveBeenCalledTimes(5);
+    stripeMocks.createCustomer.mockReset();
+  });
+
   function getOrCreateCustomerCtx(lookups: {
     byUserId?: unknown;
     subscriptions?: unknown[];

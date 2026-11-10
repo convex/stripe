@@ -360,6 +360,10 @@ export const createOrUpdateCustomer = mutation({
     const metadata = args.metadata || {};
     const userId = metadata.userId as string | undefined;
 
+    if (existing?.deleted) {
+      // Stripe deleted this customer. Leave its scrubbed row alone.
+      return args.stripeCustomerId;
+    }
     if (existing) {
       await ctx.db.patch("customers", existing._id, {
         ...(args.email !== undefined && { email: args.email }),
