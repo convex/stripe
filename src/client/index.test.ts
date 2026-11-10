@@ -105,7 +105,7 @@ describe("StripeSubscriptions client", () => {
     const client = new StripeSubscriptions(components.stripe);
 
     expect(() => client.apiKey).toThrow(
-      "STRIPE_SECRET_KEY environment variable is not set"
+      "STRIPE_SECRET_KEY environment variable is not set",
     );
 
     // Restore the environment variable
@@ -134,7 +134,9 @@ describe("StripeSubscriptions client", () => {
       quantity: 7,
     });
 
-    expect(stripeMocks.retrieveSubscription).toHaveBeenCalledWith("sub_test_123");
+    expect(stripeMocks.retrieveSubscription).toHaveBeenCalledWith(
+      "sub_test_123",
+    );
     expect(stripeMocks.updateSubscriptionItem).toHaveBeenCalledWith(
       "si_test_123",
       { quantity: 7 },

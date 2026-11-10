@@ -1,7 +1,7 @@
 # Benji's Store - Example App
 
-A complete example app demonstrating the `@convex-dev/stripe` component with Clerk
-authentication.
+A complete example app demonstrating the `@convex-dev/stripe` component with
+Clerk authentication.
 
 ![Benji's Store Screenshot](https://via.placeholder.com/800x400?text=Benji%27s+Store)
 

@@ -11,12 +11,13 @@
       "automerge": true
     },
     {
-      "matchUpdateTypes": ["major"],
-      "automerge": false
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
     },
     {
-      "matchDepTypes": ["devDependencies"],
-      "automerge": true
+      "matchUpdateTypes": ["major"],
+      "automerge": false
     }
   ],
   "constraints": {
