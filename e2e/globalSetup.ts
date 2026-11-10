@@ -17,6 +17,7 @@ const LOCAL_WEBHOOK_SECRET = "whsec_e2e_local_signing_secret";
 // The events the component handles. Stripe CLI 1.55 and later exits unless
 // `listen` is told which events to forward; earlier versions forwarded all.
 const FORWARDED_EVENTS = [
+  "charge.refunded",
   "checkout.session.completed",
   "customer.created",
   "customer.updated",

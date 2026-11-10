@@ -67,6 +67,7 @@ Environment Variables:
    (Find your deployment name in the Convex dashboard - it's the part before
    `.convex.cloud` in your URL)
 4. Select these events:
+   - `charge.refunded`
    - `checkout.session.completed`
    - `customer.created`
    - `customer.updated`
@@ -368,6 +369,7 @@ The component automatically handles these Stripe webhook events:
 | `customer.subscription.updated` | Updates or creates subscription record                       |
 | `customer.subscription.deleted` | Marks subscription as canceled                               |
 | `payment_intent.succeeded`      | Creates payment record, skipping subscription payments       |
+| `charge.refunded`               | Records the refunded amount on the payment                   |
 | `invoice.created`               | Creates invoice record                                       |
 | `invoice.finalized`             | Upserts invoice record                                       |
 | `invoice.updated`               | Upserts invoice record, including metadata changes           |
@@ -498,17 +500,25 @@ The component creates these tables in its namespace:
 
 ### payments
 
-| Field                   | Type    | Description       |
-| ----------------------- | ------- | ----------------- |
-| `stripePaymentIntentId` | string  | Payment intent ID |
-| `stripeCustomerId`      | string? | Customer ID       |
-| `amount`                | number  | Amount in cents   |
-| `currency`              | string  | Currency code     |
-| `status`                | string  | Payment status    |
-| `created`               | number  | Created timestamp |
-| `userId`                | string? | Linked user ID    |
-| `orgId`                 | string? | Linked org ID     |
-| `metadata`              | object? | Custom metadata   |
+| Field                   | Type     | Description                     |
+| ----------------------- | -------- | ------------------------------- |
+| `stripePaymentIntentId` | string   | Payment intent ID               |
+| `stripeCustomerId`      | string?  | Customer ID                     |
+| `amount`                | number   | Amount in cents                 |
+| `currency`              | string   | Currency code                   |
+| `status`                | string   | Payment status                  |
+| `created`               | number   | Created timestamp               |
+| `amountRefunded`        | number?  | Total refunded so far, in cents |
+| `refunded`              | boolean? | `true` once fully refunded      |
+| `userId`                | string?  | Linked user ID                  |
+| `orgId`                 | string?  | Linked org ID                   |
+| `metadata`              | object?  | Custom metadata                 |
+
+Stripe leaves a payment's `status` as `succeeded` after a refund. Check
+`refunded` and `amountRefunded` to show refunds. They are only set once a
+`charge.refunded` event arrives, so add that event to your webhook endpoint.
+Refunds of subscription charges aren't recorded, because subscription payments
+aren't stored in this table.
 
 ### invoices
 

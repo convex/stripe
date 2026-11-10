@@ -1277,6 +1277,74 @@ test("processed webhook events are recorded once and pruned after 30 days", asyn
   }
 });
 
+async function paymentAfterRefunds(
+  refunds: Array<{ amountRefunded: number; refunded: boolean }>,
+) {
+  const t = convexTest(schema, modules);
+  await t.mutation(api.private.handlePaymentIntentSucceeded, {
+    stripePaymentIntentId: "pi_refund",
+    stripeCustomerId: "cus_refund",
+    amount: 4900,
+    currency: "usd",
+    status: "succeeded",
+    created: 1_800_000_000,
+    metadata: { userId: "user_refund" },
+  });
+  for (const refund of refunds) {
+    await t.mutation(api.private.handleChargeRefunded, {
+      stripePaymentIntentId: "pi_refund",
+      ...refund,
+    });
+  }
+  return await t.query(api.public.getPayment, {
+    stripePaymentIntentId: "pi_refund",
+  });
+}
+
+test("a partial refund records the amount and leaves the payment unrefunded", async () => {
+  const payment = await paymentAfterRefunds([
+    { amountRefunded: 1000, refunded: false },
+  ]);
+
+  expect(payment).toMatchObject({
+    status: "succeeded",
+    amountRefunded: 1000,
+    refunded: false,
+  });
+});
+
+test("refunds that arrive out of order keep the largest running total", async () => {
+  const payment = await paymentAfterRefunds([
+    { amountRefunded: 4900, refunded: true },
+    { amountRefunded: 1000, refunded: false },
+  ]);
+
+  expect(payment).toMatchObject({ amountRefunded: 4900, refunded: true });
+});
+
+test("a payment that was never refunded has no refund fields", async () => {
+  const payment = await paymentAfterRefunds([]);
+
+  expect(payment).not.toHaveProperty("amountRefunded");
+  expect(payment).not.toHaveProperty("refunded");
+});
+
+test("a refund for a charge that isn't a stored payment is ignored", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleChargeRefunded, {
+    stripePaymentIntentId: "pi_subscription_charge",
+    amountRefunded: 2900,
+    refunded: true,
+  });
+
+  expect(
+    await t.query(api.public.getPayment, {
+      stripePaymentIntentId: "pi_subscription_charge",
+    }),
+  ).toBeNull();
+});
+
 test("linking a subscription to an org keeps the metadata mirrored from Stripe", async () => {
   const t = convexTest(schema, modules);
 

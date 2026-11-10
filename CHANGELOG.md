@@ -40,6 +40,11 @@ Other changes:
 - Customers and subscriptions track the `created` time of the newest event
   applied (`lastEventCreated`) and ignore older events that arrive late. The
   public queries don't return this field.
+- Refunds of one-time payments are synced. `charge.refunded` sets the new
+  optional `amountRefunded` and `refunded` fields on the payment, and its
+  `status` stays as Stripe reports it. Add `charge.refunded` to your webhook
+  endpoint's events to turn this on. If you wrote your own `returns` validator
+  for payment data, add both fields or use `vPayment`.
 - Invoice webhooks skip writes that change nothing, which cuts down the write
   conflicts when several events for one invoice arrive together (#24).
 - New `StripeSubscriptions.updateSubscriptionMetadata()` writes metadata to

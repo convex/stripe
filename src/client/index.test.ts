@@ -1102,6 +1102,63 @@ describe("processEvent", () => {
     ).rejects.toThrow("invalid api key");
   });
 
+  test("charge.refunded passes the refund totals to the component", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "charge.refunded",
+        data: {
+          object: {
+            id: "ch_refunded",
+            payment_intent: { id: "pi_refunded" },
+            amount_refunded: 1500,
+            refunded: false,
+          },
+        },
+      },
+      {},
+    );
+
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleChargeRefunded,
+      {
+        stripePaymentIntentId: "pi_refunded",
+        amountRefunded: 1500,
+        refunded: false,
+      },
+    );
+  });
+
+  test("charge.refunded without a payment intent is skipped", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const logs = captureConsole();
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "charge.refunded",
+        data: {
+          object: {
+            id: "ch_no_intent",
+            payment_intent: null,
+            amount_refunded: 500,
+            refunded: true,
+          },
+        },
+      },
+      {},
+    );
+
+    expect(logs.stop()).toContain("ch_no_intent");
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
   test("skips invoices that have no customer", async () => {
     const processEvent = (clientModule as any).processEvent;
     const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };

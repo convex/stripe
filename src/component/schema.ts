@@ -52,6 +52,10 @@ const schema = defineSchema({
     status: v.string(),
     created: v.number(),
     metadata: v.optional(v.any()),
+    // Set by `charge.refunded`. Stripe keeps `status` as "succeeded" after a
+    // refund, so these are how a refund shows up.
+    amountRefunded: v.optional(v.number()),
+    refunded: v.optional(v.boolean()),
     // Custom lookup fields for efficient querying
     orgId: v.optional(v.string()),
     userId: v.optional(v.string()),

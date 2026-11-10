@@ -814,6 +814,23 @@ export async function processEvent(
       break;
     }
 
+    case "charge.refunded": {
+      const charge = event.data.object as StripeSDK.Charge;
+      const stripePaymentIntentId = getStripeObjectId(charge.payment_intent);
+      if (!stripePaymentIntentId) {
+        console.log(
+          `ℹ️ Skipping refund of charge ${charge.id} without a payment intent`,
+        );
+        break;
+      }
+      await ctx.runMutation(component.private.handleChargeRefunded, {
+        stripePaymentIntentId,
+        amountRefunded: charge.amount_refunded,
+        refunded: charge.refunded,
+      });
+      break;
+    }
+
     default:
       console.log(`ℹ️ Unhandled event type: ${event.type}`);
   }

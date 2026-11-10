@@ -122,6 +122,31 @@ describe.skipIf(!inject("stripeEnabled"))("real Stripe test mode", () => {
       oneTime.id,
     ]);
 
+    // A partial refund, then the rest. Stripe leaves the payment intent
+    // "succeeded", so the refund has to show up in the two refund fields.
+    const readOneTime = () =>
+      runComponent<Payment>("public:getPayment", {
+        stripePaymentIntentId: oneTime.id,
+      });
+    await stripe.refunds.create({ payment_intent: oneTime.id, amount: 200 });
+    await waitFor(readOneTime, (synced) => synced?.amountRefunded === 200);
+    expect((await readOneTime())?.refunded).toBe(false);
+    await stripe.refunds.create({ payment_intent: oneTime.id });
+    const refunded = await waitFor(
+      readOneTime,
+      (synced) => synced?.refunded === true,
+    );
+    expect(refunded?.amountRefunded).toBe(500);
+    // The example's query passes the refunded payment through its validator.
+    const userPayments = await runAsUser<Payment[]>(
+      "stripe:getUserPayments",
+      {},
+      userId,
+    );
+    expect(userPayments).toEqual([
+      expect.objectContaining({ refunded: true, amountRefunded: 500 }),
+    ]);
+
     await stripe.subscriptions.cancel(subscription.id);
     await waitFor(
       () =>
