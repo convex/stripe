@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.8 (unreleased)
+
+- Fix subscription renewals being recorded as one-time payments. Stripe removed
+  `PaymentIntent.invoice` in API version `2025-03-31.basil`, so
+  `payment_intent.succeeded` now finds the invoice through the Invoice Payments
+  API. Apps on earlier releases may have renewal charges in the `payments`
+  table; they are the rows whose payment intent belongs to a subscription
+  invoice.
+- An older `customer.subscription.updated` can no longer revive a canceled
+  subscription (thanks @milehighideas, #68).
+- Webhook processing failures now return 500 so Stripe redelivers the event,
+  including failures while syncing a checkout's invoice or checking whether a
+  payment belongs to a subscription. Previously these were logged and
+  acknowledged with 200.
+- `payment_intent.succeeded` now calls Stripe's Invoice Payments and Invoices
+  APIs, and a subscription checkout reads its subscription and invoice. A
+  restricted `STRIPE_SECRET_KEY` needs read access to all three, or those events
+  fail with a 500 and Stripe keeps retrying them.
+- Webhook logs no longer include raw errors, which could contain the payload,
+  signature header, or customer fields. Add the new `onError` option to
+  `registerRoutes` to report the underlying error yourself.
+- Invoices without a customer are skipped instead of failing validation, and
+  expanded customer, subscription, and invoice objects in event payloads are
+  read correctly.
+
 ## 0.1.7
 
 - Adds a /test entrypoint for testing, compatibile with convex-test's new
