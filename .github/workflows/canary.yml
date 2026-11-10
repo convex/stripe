@@ -26,7 +26,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Node setup
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22.x"
       - name: Install the newest stripe and convex releases
