@@ -6,6 +6,7 @@ import {
   type Invoice,
   type Payment,
   type Subscription,
+  runAsUser,
   runComponent,
   uniqueId,
   waitFor,
@@ -141,5 +142,37 @@ describe.skipIf(!inject("stripeEnabled"))("real Stripe test mode", () => {
     expect(
       await runComponent<Customer>("public:getCustomerByUserId", { userId }),
     ).toBeNull();
+  });
+
+  test("replaces a customer that is deleted the day it was created", async () => {
+    const userId = uniqueId("user");
+    const getOrCreate = () =>
+      runAsUser<{ customerId: string; isNew: boolean }>(
+        "stripe:getOrCreateCustomer",
+        {},
+        userId,
+      );
+
+    const first = await getOrCreate();
+    expect(first?.isNew).toBe(true);
+    await stripe.customers.del(first!.customerId);
+    await waitFor(
+      () =>
+        runComponent<Customer>("public:getCustomer", {
+          stripeCustomerId: first!.customerId,
+        }),
+      (synced) => synced?.deleted === true,
+    );
+
+    // Stripe replays the first create for this user's idempotency key, so
+    // the component has to notice the deleted customer and create another.
+    const second = await getOrCreate();
+    expect(second?.isNew).toBe(true);
+    expect(second?.customerId).not.toBe(first!.customerId);
+    const replacement = await stripe.customers.retrieve(second!.customerId);
+    expect(replacement.deleted).toBeUndefined();
+    expect(replacement.id).toBe(second!.customerId);
+
+    await stripe.customers.del(second!.customerId);
   });
 });

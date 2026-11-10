@@ -259,6 +259,33 @@ describe("webhook route on a real Convex backend", () => {
     expect(customer?.email).toBeUndefined();
   });
 
+  test("the example's billing portal action skips a customer Stripe deleted", async () => {
+    const userId = uniqueId("user");
+    const customerId = uniqueId("cus");
+    await deliver(
+      stripeEvent("customer.created", customerObject(customerId, userId)),
+    );
+    await deliver(
+      stripeEvent(
+        "customer.subscription.created",
+        subscriptionObject(uniqueId("sub"), customerId, userId, "active"),
+      ),
+    );
+    await deliver(
+      stripeEvent("customer.deleted", {
+        id: customerId,
+        object: "customer",
+        deleted: true,
+      }),
+    );
+
+    // The subscription still points at the deleted customer. Asking Stripe
+    // for its portal would fail, so the action has to return null instead.
+    expect(
+      await runAsUser("stripe:getCustomerPortalUrl", {}, userId),
+    ).toBeNull();
+  });
+
   test("records a completed one-time checkout", async () => {
     const sessionId = uniqueId("cs");
     const customerId = uniqueId("cus");
