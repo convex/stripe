@@ -312,4 +312,113 @@ describe("webhook route on a real Convex backend", () => {
       mode: "payment",
     });
   });
+
+  test("keeps a subscription canceled when its deletion arrives before its creation", async () => {
+    const userId = uniqueId("user");
+    const customerId = uniqueId("cus");
+    const subscriptionId = uniqueId("sub");
+    const createdAt = nowSeconds() - 60;
+
+    const deleted = await deliver(
+      stripeEvent(
+        "customer.subscription.deleted",
+        subscriptionObject(subscriptionId, customerId, userId, "canceled"),
+        { created: createdAt + 30 },
+      ),
+    );
+    const created = await deliver(
+      stripeEvent(
+        "customer.subscription.created",
+        subscriptionObject(subscriptionId, customerId, userId, "active"),
+        { created: createdAt },
+      ),
+    );
+
+    expect(deleted.status).toBe(200);
+    expect(created.status).toBe(200);
+    expect(
+      await runComponent<Subscription>("public:getSubscription", {
+        stripeSubscriptionId: subscriptionId,
+      }),
+    ).toMatchObject({
+      stripeCustomerId: customerId,
+      status: "canceled",
+      priceId: "price_e2e_team",
+      userId,
+    });
+  });
+
+  test("reads the period end from the subscription when its item has none", async () => {
+    const userId = uniqueId("user");
+    const subscriptionId = uniqueId("sub");
+    const periodEnd = nowSeconds() + 7 * 24 * 60 * 60;
+
+    await deliver(
+      stripeEvent(
+        "customer.subscription.created",
+        subscriptionObject(subscriptionId, uniqueId("cus"), userId, "active", {
+          current_period_end: periodEnd,
+          items: { data: [{ quantity: 1, price: { id: "price_e2e_team" } }] },
+        }),
+      ),
+    );
+
+    expect(
+      await runComponent<Subscription>("public:getSubscription", {
+        stripeSubscriptionId: subscriptionId,
+      }),
+    ).toMatchObject({ currentPeriodEnd: periodEnd });
+  });
+
+  test("marks a checkout paid only when its delayed payment succeeds", async () => {
+    const sessionId = uniqueId("cs");
+    const session = (paymentStatus: string) => ({
+      id: sessionId,
+      object: "checkout.session",
+      customer: uniqueId("cus"),
+      mode: "payment",
+      payment_status: paymentStatus,
+      payment_intent: null,
+      metadata: {},
+    });
+    const stored = () =>
+      runComponent<{ paymentStatus?: string }>("public:getCheckoutSession", {
+        stripeCheckoutSessionId: sessionId,
+      });
+
+    await deliver(stripeEvent("checkout.session.completed", session("unpaid")));
+    expect(await stored()).toMatchObject({
+      status: "complete",
+      paymentStatus: "unpaid",
+    });
+
+    await deliver(
+      stripeEvent("checkout.session.async_payment_succeeded", session("paid")),
+    );
+    expect(await stored()).toMatchObject({ paymentStatus: "paid" });
+  });
+
+  test("runs the handlers once when an event is delivered twice at the same time", async () => {
+    const customerId = uniqueId("cus");
+    const event = stripeEvent(
+      "customer.created",
+      customerObject(customerId, uniqueId("user")),
+    );
+
+    const responses = await Promise.all([deliver(event), deliver(event)]);
+    const statuses = responses.map((response) => response.status).sort();
+
+    // One delivery wins. The other is either told the event is in progress
+    // or, if it arrived after the first finished, that it's already done.
+    expect([
+      [200, 200],
+      [200, 409],
+    ]).toContainEqual(statuses);
+    expect((await deliver(event)).status).toBe(200);
+    expect(
+      await runComponent<Customer>("public:getCustomer", {
+        stripeCustomerId: customerId,
+      }),
+    ).toMatchObject({ stripeCustomerId: customerId });
+  });
 });

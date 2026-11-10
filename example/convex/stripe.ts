@@ -57,6 +57,11 @@ export const getOrCreateCustomer = action({
 // ============================================================================
 // CHECKOUT SESSIONS
 // ============================================================================
+//
+// These actions take `priceId` from the client to keep the demo short, so a
+// signed-in user can check out with any price in the Stripe account. In a real
+// app, look the price up on the server (for example from a plan name) or check
+// it against a list of prices you sell.
 
 /**
  * Create a checkout session for a subscription.
@@ -104,6 +109,10 @@ export const createSubscriptionCheckout = action({
 /**
  * Create a checkout session for a TEAM subscription.
  * Links the subscription to an organization ID.
+ *
+ * This demo has no organization membership, so it accepts any `orgId`. In a
+ * real app, check that the user may buy for that organization first.
+ * Otherwise anyone can attach a subscription to someone else's org.
  */
 export const createTeamSubscriptionCheckout = action({
   args: {

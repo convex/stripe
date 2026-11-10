@@ -1228,3 +1228,319 @@ describe("processEvent", () => {
     });
   });
 });
+
+function subscriptionEvent(
+  type: string,
+  subscription: Record<string, unknown> = {},
+) {
+  return {
+    type,
+    created: 1_800_000_500,
+    data: {
+      object: {
+        id: "sub_test",
+        customer: "cus_test",
+        status: "active",
+        cancel_at_period_end: false,
+        cancel_at: null,
+        metadata: { userId: "user_test" },
+        items: {
+          data: [
+            {
+              current_period_end: 1_800_000_000,
+              quantity: 3,
+              price: { id: "price_test" },
+            },
+          ],
+        },
+        ...subscription,
+      },
+    },
+  };
+}
+
+// A payload with the period end only on the subscription, which older API
+// versions also send there.
+const legacySubscription = {
+  current_period_end: 1_700_000_000,
+  items: { data: [{ quantity: 3, price: { id: "price_test" } }] },
+};
+
+describe("review fixes for 0.2.0", () => {
+  const processEvent = (clientModule as any).processEvent;
+
+  test.each([
+    "customer.subscription.created",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+  ])(
+    "%s reads the period end from the subscription when the item has none",
+    async (type) => {
+      const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+      await processEvent(
+        ctx,
+        components.stripe,
+        subscriptionEvent(type, legacySubscription),
+        {},
+      );
+
+      expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
+        currentPeriodEnd: 1_700_000_000,
+      });
+    },
+  );
+
+  test("subscription events prefer the item's period end", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      subscriptionEvent("customer.subscription.updated", {
+        current_period_end: 1_700_000_000,
+      }),
+      {},
+    );
+
+    expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
+      currentPeriodEnd: 1_800_000_000,
+    });
+  });
+
+  test("cancelSubscription syncs the period end from the subscription when the item has none", async () => {
+    stripeMocks.cancelSubscription.mockResolvedValueOnce({
+      id: "sub_legacy",
+      customer: "cus_legacy",
+      status: "canceled",
+      cancel_at_period_end: false,
+      cancel_at: null,
+      metadata: {},
+      ...legacySubscription,
+    });
+    const ctx = { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() };
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.cancelSubscription(ctx, {
+      stripeSubscriptionId: "sub_legacy",
+      cancelAtPeriodEnd: false,
+    });
+
+    expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
+      currentPeriodEnd: 1_700_000_000,
+    });
+  });
+
+  test("customer.subscription.deleted sends enough to store an unknown subscription", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      subscriptionEvent("customer.subscription.deleted", {
+        status: "canceled",
+      }),
+      {},
+    );
+
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleSubscriptionDeleted,
+      {
+        stripeSubscriptionId: "sub_test",
+        stripeCustomerId: "cus_test",
+        priceId: "price_test",
+        quantity: 3,
+        metadata: { userId: "user_test" },
+        cancelAtPeriodEnd: false,
+        currentPeriodEnd: 1_800_000_000,
+        cancelAt: undefined,
+        eventCreated: 1_800_000_500,
+      },
+    );
+  });
+
+  test("createCheckoutSession merges params.metadata with the metadata argument", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    stripeMocks.createCheckoutSession.mockResolvedValue({
+      id: "cs_session_metadata",
+      url: "https://checkout.stripe.com/c/pay/cs_session_metadata",
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.createCheckoutSession(
+      { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+      {
+        priceId: "price_one_time",
+        mode: "payment",
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+        metadata: { userId: "user_123", source: "argument" },
+        params: { metadata: { campaign: "spring", source: "params" } },
+      },
+    );
+
+    expect(stripeMocks.createCheckoutSession.mock.calls[0][0].metadata).toEqual(
+      { campaign: "spring", userId: "user_123", source: "argument" },
+    );
+  });
+
+  test.each([
+    ["checkout.session.completed", "unpaid"],
+    ["checkout.session.async_payment_succeeded", "paid"],
+    ["checkout.session.async_payment_failed", "unpaid"],
+  ])("%s stores the payment status", async (type, paymentStatus) => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type,
+        created: 1_800_000_000,
+        data: {
+          object: {
+            id: "cs_async",
+            customer: "cus_async",
+            mode: "payment",
+            payment_status: paymentStatus,
+            payment_intent: null,
+            metadata: { userId: "user_async" },
+          },
+        },
+      },
+      {},
+    );
+
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleCheckoutSessionCompleted,
+      {
+        stripeCheckoutSessionId: "cs_async",
+        stripeCustomerId: "cus_async",
+        mode: "payment",
+        paymentStatus,
+        metadata: { userId: "user_async" },
+      },
+    );
+  });
+
+  function refundEvent(type: string, refund: Record<string, unknown>) {
+    return {
+      type,
+      created: 1_800_000_000,
+      data: { object: { id: "re_test", charge: "ch_test", ...refund } },
+    };
+  }
+
+  test.each(["refund.failed", "refund.updated", "charge.refund.updated"])(
+    "a failed refund in %s re-reads the charge's refund total",
+    async (type) => {
+      const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+      const stripe = {
+        charges: {
+          retrieve: vi.fn().mockResolvedValue({
+            id: "ch_test",
+            payment_intent: "pi_test",
+            amount_refunded: 1000,
+            refunded: false,
+          }),
+        },
+      };
+
+      await processEvent(
+        ctx,
+        components.stripe,
+        refundEvent(type, { status: "failed" }),
+        stripe,
+      );
+
+      expect(stripe.charges.retrieve).toHaveBeenCalledWith("ch_test");
+      expect(ctx.runMutation).toHaveBeenCalledWith(
+        components.stripe.private.handleChargeRefunded,
+        {
+          stripePaymentIntentId: "pi_test",
+          amountRefunded: 1000,
+          refunded: false,
+          authoritative: true,
+          eventCreated: 1_800_000_000,
+        },
+      );
+    },
+  );
+
+  test("charge.refunded sends the event time, so a redelivery can be told from a new refund", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "charge.refunded",
+        created: 1_800_000_777,
+        data: {
+          object: {
+            id: "ch_timed",
+            payment_intent: "pi_timed",
+            amount_refunded: 4900,
+            refunded: true,
+          },
+        },
+      },
+      {},
+    );
+
+    expect(ctx.runMutation.mock.calls[0][1]).toEqual({
+      stripePaymentIntentId: "pi_timed",
+      amountRefunded: 4900,
+      refunded: true,
+      eventCreated: 1_800_000_777,
+    });
+  });
+
+  test("a refund update that didn't fail makes no Stripe call", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const stripe = { charges: { retrieve: vi.fn() } };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      refundEvent("refund.updated", { status: "succeeded" }),
+      stripe,
+    );
+
+    expect(stripe.charges.retrieve).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  test("getOrCreateCustomer with matchByEmail asks for an unclaimed customer", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_new_email" });
+    const ctx = {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue("cus_ignored"),
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ stripeCustomerId: "cus_new_email" }),
+    };
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.getOrCreateCustomer(ctx, {
+      userId: "user_email",
+      email: "shared@example.com",
+      matchByEmail: true,
+    });
+
+    expect(ctx.runQuery).toHaveBeenCalledWith(
+      components.stripe.public.getCustomerByEmail,
+      { email: "shared@example.com", unclaimed: true },
+    );
+  });
+});

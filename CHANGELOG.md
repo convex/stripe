@@ -69,6 +69,26 @@ Fixes:
   start syncing.
 - `getSubscriptionByOrgId` returns the org's live subscription (active or
   trialing first) instead of the oldest one, which was often canceled.
+- A subscription whose `customer.subscription.deleted` arrives before the
+  component has stored it is now saved as canceled. Previously the event was
+  dropped, and a late `created` or `updated` event then stored the subscription
+  as active for good.
+- Subscription events fall back to the subscription's own `current_period_end`
+  when its first item has none, instead of storing `currentPeriodEnd` as `0`.
+  Real payloads on API version `2023-08-16` already carry the value on the item,
+  so this only matters for payloads that leave it out.
+- `createCheckoutSession` merges `params.metadata` with the `metadata` argument
+  instead of letting it replace the argument. The argument wins on shared keys,
+  as `subscriptionMetadata` and `paymentIntentMetadata` already did.
+- When Stripe delivers one event twice at the same moment, only one delivery
+  runs the sync and your handlers. The other gets a 409 and Stripe retries it.
+  Both used to run.
+- A failed or canceled refund lowers the payment's `amountRefunded` again, and a
+  `charge.refunded` from before the failure that arrives late can't raise it
+  back. Add `refund.failed` to your webhook endpoint's events. A restricted
+  `STRIPE_SECRET_KEY` needs read access to charges for this.
+- `getOrCreateCustomer` with `matchByEmail` finds an unclaimed customer even
+  when a newer customer with the same email belongs to another user.
 - The example app no longer ships public functions without auth checks. If you
   copied `linkSubscriptionToOrg`, `getCustomerData`, `getSubscriptionInfo`,
   `getOrgSubscription`, `getOrgPayments`, or `getOrgInvoices` from it, add an
@@ -98,6 +118,17 @@ Other changes:
   `status` stays as Stripe reports it. Add `charge.refunded` to your webhook
   endpoint's events to turn this on. If you wrote your own `returns` validator
   for payment data, add both fields or use `vPayment`.
+- Checkout sessions have a new optional `paymentStatus` field, and the component
+  handles `checkout.session.async_payment_succeeded` and
+  `checkout.session.async_payment_failed`. A session paid with a delayed method
+  such as a bank debit is `complete` while still `unpaid`, so check
+  `paymentStatus` before you deliver an order. Add both events to your webhook
+  endpoint. If you wrote your own `returns` validator for checkout session data,
+  add `paymentStatus: v.optional(v.string())` or use `vCheckoutSession`.
+- The `list*` queries take an optional `limit` and then return the newest
+  matches first. Without it they still return every match.
+- `getCustomerByEmail` takes an optional `unclaimed` flag that skips customers
+  linked to a user.
 - Invoice webhooks skip writes that change nothing, which cuts down the write
   conflicts when several events for one invoice arrive together (#24).
 - New `StripeSubscriptions.updateSubscriptionMetadata()` writes metadata to

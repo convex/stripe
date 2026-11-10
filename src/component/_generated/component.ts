@@ -24,11 +24,20 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     private: {
+      claimWebhookEvent: FunctionReference<
+        "mutation",
+        "internal",
+        { created: number; stripeEventId: string; type: string },
+        "claimed" | "processed" | "in_progress",
+        Name
+      >;
       handleChargeRefunded: FunctionReference<
         "mutation",
         "internal",
         {
           amountRefunded: number;
+          authoritative?: boolean;
+          eventCreated?: number;
           refunded: boolean;
           stripePaymentIntentId: string;
         },
@@ -41,6 +50,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           metadata?: any;
           mode: string;
+          paymentStatus?: string;
           stripeCheckoutSessionId: string;
           stripeCustomerId?: string;
         },
@@ -144,6 +154,10 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cancelAtPeriodEnd?: boolean;
           currentPeriodEnd?: number;
           eventCreated?: number;
+          metadata?: any;
+          priceId?: string;
+          quantity?: number;
+          stripeCustomerId?: string;
           stripeSubscriptionId: string;
         },
         null,
@@ -178,6 +192,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         { created: number; stripeEventId: string; type: string },
+        null,
+        Name
+      >;
+      releaseWebhookEvent: FunctionReference<
+        "mutation",
+        "internal",
+        { stripeEventId: string },
         null,
         Name
       >;
@@ -216,6 +237,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           metadata?: any;
           mode: string;
+          paymentStatus?: string;
           status: string;
           stripeCheckoutSessionId: string;
           stripeCustomerId?: string;
@@ -239,7 +261,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getCustomerByEmail: FunctionReference<
         "query",
         "internal",
-        { email: string },
+        { email: string; unclaimed?: boolean },
         {
           deleted?: boolean;
           email?: string;
@@ -324,10 +346,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listCheckoutSessions: FunctionReference<
         "query",
         "internal",
-        { stripeCustomerId: string },
+        { limit?: number; stripeCustomerId: string },
         Array<{
           metadata?: any;
           mode: string;
+          paymentStatus?: string;
           status: string;
           stripeCheckoutSessionId: string;
           stripeCustomerId?: string;
@@ -337,7 +360,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listInvoices: FunctionReference<
         "query",
         "internal",
-        { stripeCustomerId: string },
+        { limit?: number; stripeCustomerId: string },
         Array<{
           amountDue: number;
           amountPaid: number;
@@ -355,7 +378,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listInvoicesByOrgId: FunctionReference<
         "query",
         "internal",
-        { orgId: string },
+        { limit?: number; orgId: string },
         Array<{
           amountDue: number;
           amountPaid: number;
@@ -373,7 +396,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listInvoicesByUserId: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { limit?: number; userId: string },
         Array<{
           amountDue: number;
           amountPaid: number;
@@ -391,7 +414,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listPayments: FunctionReference<
         "query",
         "internal",
-        { stripeCustomerId: string },
+        { limit?: number; stripeCustomerId: string },
         Array<{
           amount: number;
           amountRefunded?: number;
@@ -410,7 +433,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listPaymentsByOrgId: FunctionReference<
         "query",
         "internal",
-        { orgId: string },
+        { limit?: number; orgId: string },
         Array<{
           amount: number;
           amountRefunded?: number;
@@ -429,7 +452,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listPaymentsByUserId: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { limit?: number; userId: string },
         Array<{
           amount: number;
           amountRefunded?: number;
@@ -448,7 +471,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listSubscriptions: FunctionReference<
         "query",
         "internal",
-        { stripeCustomerId: string },
+        { limit?: number; stripeCustomerId: string },
         Array<{
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
@@ -467,7 +490,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listSubscriptionsByOrgId: FunctionReference<
         "query",
         "internal",
-        { orgId: string },
+        { limit?: number; orgId: string },
         Array<{
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
@@ -486,7 +509,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listSubscriptionsByUserId: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { limit?: number; userId: string },
         Array<{
           cancelAt?: number;
           cancelAtPeriodEnd: boolean;
