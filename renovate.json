@@ -20,6 +20,11 @@
       "automerge": false
     },
     {
+      "description": "convex 1.49 requires Node 22. CI runs on Node 20, the oldest version this package supports, and the nightly canary covers the newest convex. Remove this rule when CI moves to Node 22.",
+      "matchPackageNames": ["convex"],
+      "allowedVersions": "<1.49.0"
+    },
+    {
       "description": "config:best-practices lowers the wait for npm packages to 3 days. .npmrc refuses anything newer than 7, so a younger version breaks the lockfile update.",
       "matchDatasources": ["npm"],
       "minimumReleaseAge": "14 days"

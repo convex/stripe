@@ -68,7 +68,7 @@
     "@vercel/analytics": "2.0.1",
     "@vitejs/plugin-react": "6.2.1",
     "chokidar-cli": "3.0.0",
-    "convex": "1.49.0",
+    "convex": "1.48.0",
     "convex-test": "0.0.67",
     "eslint": "10.14.0",
     "eslint-plugin-react-hooks": "7.1.1",
