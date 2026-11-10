@@ -1,7 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
 import StripeSDK from "stripe";
+import type { HttpRouter } from "convex/server";
 import * as clientModule from "./index.js";
-import { StripeSubscriptions, registerRoutes } from "./index.js";
+import {
+  StripeSubscriptions,
+  registerRoutes,
+  type RegisterRoutesConfig,
+} from "./index.js";
 import { components } from "./setup.test.js";
 
 const stripeMocks = vi.hoisted(() => ({
@@ -10,26 +15,39 @@ const stripeMocks = vi.hoisted(() => ({
   cancelSubscription: vi.fn(),
   updateSubscriptionItem: vi.fn(),
   createCheckoutSession: vi.fn(),
+  constructEvent: vi.fn(),
+  createCustomer: vi.fn(),
+  updateCustomer: vi.fn(),
 }));
 
 vi.mock("stripe", () => ({
-  default: vi.fn().mockImplementation(function StripeMock() {
-    return {
-      subscriptions: {
-        retrieve: stripeMocks.retrieveSubscription,
-        update: stripeMocks.updateSubscription,
-        cancel: stripeMocks.cancelSubscription,
-      },
-      subscriptionItems: {
-        update: stripeMocks.updateSubscriptionItem,
-      },
-      checkout: {
-        sessions: {
-          create: stripeMocks.createCheckoutSession,
+  default: Object.assign(
+    vi.fn().mockImplementation(function StripeMock() {
+      return {
+        webhooks: {
+          constructEventAsync: stripeMocks.constructEvent,
         },
-      },
-    };
-  }),
+        customers: {
+          create: stripeMocks.createCustomer,
+          update: stripeMocks.updateCustomer,
+        },
+        subscriptions: {
+          retrieve: stripeMocks.retrieveSubscription,
+          update: stripeMocks.updateSubscription,
+          cancel: stripeMocks.cancelSubscription,
+        },
+        subscriptionItems: {
+          update: stripeMocks.updateSubscriptionItem,
+        },
+        checkout: {
+          sessions: {
+            create: stripeMocks.createCheckoutSession,
+          },
+        },
+      };
+    }),
+    { API_VERSION: "2026-10-28.endive" },
+  ),
 }));
 
 describe("StripeSubscriptions client", () => {
@@ -87,7 +105,7 @@ describe("StripeSubscriptions client", () => {
     const client = new StripeSubscriptions(components.stripe);
 
     expect(() => client.apiKey).toThrow(
-      "STRIPE_SECRET_KEY environment variable is not set"
+      "STRIPE_SECRET_KEY environment variable is not set",
     );
 
     // Restore the environment variable
@@ -116,7 +134,9 @@ describe("StripeSubscriptions client", () => {
       quantity: 7,
     });
 
-    expect(stripeMocks.retrieveSubscription).toHaveBeenCalledWith("sub_test_123");
+    expect(stripeMocks.retrieveSubscription).toHaveBeenCalledWith(
+      "sub_test_123",
+    );
     expect(stripeMocks.updateSubscriptionItem).toHaveBeenCalledWith(
       "si_test_123",
       { quantity: 7 },
@@ -216,6 +236,230 @@ describe("StripeSubscriptions client", () => {
       stripeCustomerId: "cus_reactivate",
       priceId: "price_reactivate",
     });
+  });
+
+  test("updateSubscriptionMetadata writes to Stripe, then syncs the result", async () => {
+    stripeMocks.updateSubscription.mockResolvedValueOnce({
+      id: "sub_meta",
+      customer: "cus_meta",
+      status: "active",
+      cancel_at_period_end: false,
+      cancel_at: null,
+      metadata: { userId: "user_meta", orgId: "org_meta", seats: "5" },
+      items: {
+        data: [
+          {
+            current_period_end: 1_800_000_000,
+            quantity: 5,
+            price: { id: "price_meta" },
+          },
+        ],
+      },
+    });
+    const ctx = {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue(null),
+      runQuery: vi.fn(),
+    };
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.updateSubscriptionMetadata(ctx, {
+      stripeSubscriptionId: "sub_meta",
+      metadata: { orgId: "org_meta", seats: "5" },
+    });
+
+    expect(stripeMocks.updateSubscription).toHaveBeenCalledWith("sub_meta", {
+      metadata: { orgId: "org_meta", seats: "5" },
+    });
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleSubscriptionUpdated,
+      expect.objectContaining({
+        stripeSubscriptionId: "sub_meta",
+        metadata: { userId: "user_meta", orgId: "org_meta", seats: "5" },
+      }),
+    );
+  });
+
+  // What the component returns when a user has no customer, subscriptions,
+  // or payments, followed by `getCustomer` results for each created customer.
+  function newUserCtx(createdCustomers: unknown[]) {
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    for (const customer of createdCustomers) {
+      runQuery.mockResolvedValueOnce(customer);
+    }
+    return {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue("cus_ignored"),
+      runQuery,
+    };
+  }
+
+  test("getOrCreateCustomer replaces a deleted customer that Stripe replays for the idempotency key", async () => {
+    stripeMocks.createCustomer.mockReset();
+    stripeMocks.createCustomer
+      .mockResolvedValueOnce({ id: "cus_deleted_today" })
+      .mockResolvedValueOnce({ id: "cus_replacement" });
+    const ctx = newUserCtx([
+      { stripeCustomerId: "cus_deleted_today", deleted: true },
+      { stripeCustomerId: "cus_replacement" },
+    ]);
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_replayed",
+    });
+
+    expect(result).toEqual({ customerId: "cus_replacement", isNew: true });
+    expect(
+      stripeMocks.createCustomer.mock.calls.map(([, options]) => options),
+    ).toEqual([
+      { idempotencyKey: "create_customer_user_replayed" },
+      {
+        idempotencyKey: "create_customer_user_replayed_after_cus_deleted_today",
+      },
+    ]);
+  });
+
+  test("getOrCreateCustomer gives up when every customer Stripe returns is deleted", async () => {
+    stripeMocks.createCustomer.mockReset();
+    stripeMocks.createCustomer.mockResolvedValue({ id: "cus_always_deleted" });
+    const deleted = { stripeCustomerId: "cus_always_deleted", deleted: true };
+    const ctx = newUserCtx([deleted, deleted, deleted, deleted, deleted]);
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await expect(
+      client.getOrCreateCustomer(ctx, { userId: "user_stuck" }),
+    ).rejects.toThrow("have since been deleted");
+    expect(stripeMocks.createCustomer).toHaveBeenCalledTimes(5);
+    stripeMocks.createCustomer.mockReset();
+  });
+
+  function getOrCreateCustomerCtx(lookups: {
+    byUserId?: unknown;
+    subscriptions?: unknown[];
+    payments?: unknown[];
+    linkedCustomers?: unknown[];
+    byEmail?: unknown;
+  }) {
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce(lookups.byUserId ?? null)
+      .mockResolvedValueOnce(lookups.subscriptions ?? [])
+      .mockResolvedValueOnce(lookups.payments ?? []);
+    for (const customer of lookups.linkedCustomers ?? []) {
+      runQuery.mockResolvedValueOnce(customer);
+    }
+    runQuery.mockResolvedValueOnce(lookups.byEmail ?? null);
+    return {
+      runAction: vi.fn(),
+      runMutation: vi.fn().mockResolvedValue("cus_ignored"),
+      runQuery,
+    };
+  }
+
+  test("getOrCreateCustomer skips a deleted customer linked through subscriptions", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_new" });
+    const ctx = getOrCreateCustomerCtx({
+      subscriptions: [{ stripeCustomerId: "cus_deleted" }],
+      linkedCustomers: [{ stripeCustomerId: "cus_deleted", deleted: true }],
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_returning",
+      email: "returning@example.com",
+    });
+
+    expect(result).toEqual({ customerId: "cus_new", isNew: true });
+  });
+
+  test("getOrCreateCustomer ignores email matches unless matchByEmail is set", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_fresh" });
+    const ctx = getOrCreateCustomerCtx({
+      byEmail: { stripeCustomerId: "cus_unclaimed" },
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_unverified",
+      email: "victim@example.com",
+    });
+
+    expect(result).toEqual({ customerId: "cus_fresh", isNew: true });
+    // Three lookups by user, then the check on the created customer. None
+    // by email.
+    expect(
+      ctx.runQuery.mock.calls.map(([, args]) => Object.keys(args)),
+    ).toEqual([["userId"], ["userId"], ["userId"], ["stripeCustomerId"]]);
+    expect(stripeMocks.updateCustomer).not.toHaveBeenCalled();
+  });
+
+  test("getOrCreateCustomer never matches another user's customer by email", async () => {
+    stripeMocks.createCustomer.mockResolvedValueOnce({ id: "cus_mine" });
+    const ctx = getOrCreateCustomerCtx({
+      byEmail: { stripeCustomerId: "cus_someone_else", userId: "user_other" },
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_me",
+      email: "shared@example.com",
+      matchByEmail: true,
+    });
+
+    expect(result).toEqual({ customerId: "cus_mine", isNew: true });
+    expect(stripeMocks.updateCustomer).not.toHaveBeenCalled();
+  });
+
+  test("getOrCreateCustomer claims an unclaimed customer with the same email", async () => {
+    stripeMocks.updateCustomer.mockResolvedValueOnce({
+      id: "cus_unclaimed",
+      email: "claim@example.com",
+      name: null,
+      metadata: { userId: "user_claimer", plan: "legacy" },
+    });
+    const ctx = getOrCreateCustomerCtx({
+      byEmail: { stripeCustomerId: "cus_unclaimed" },
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    const result = await client.getOrCreateCustomer(ctx, {
+      userId: "user_claimer",
+      email: "claim@example.com",
+      matchByEmail: true,
+    });
+
+    expect(result).toEqual({ customerId: "cus_unclaimed", isNew: false });
+    expect(stripeMocks.updateCustomer).toHaveBeenCalledWith("cus_unclaimed", {
+      metadata: { userId: "user_claimer" },
+    });
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.public.createOrUpdateCustomer,
+      {
+        stripeCustomerId: "cus_unclaimed",
+        email: "claim@example.com",
+        name: undefined,
+        metadata: { userId: "user_claimer", plan: "legacy" },
+      },
+    );
   });
 
   test("passes additional checkout session params without allowing mode override", async () => {
@@ -387,6 +631,85 @@ describe("StripeSubscriptions client", () => {
     });
   });
 
+  test("setup mode sends no line items", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    stripeMocks.createCheckoutSession.mockResolvedValue({
+      id: "cs_setup",
+      url: "https://checkout.stripe.com/c/pay/cs_setup",
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await client.createCheckoutSession(
+      { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+      {
+        mode: "setup",
+        customerId: "cus_setup",
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+        params: { currency: "usd" },
+      },
+    );
+
+    expect(stripeMocks.createCheckoutSession).toHaveBeenCalledWith({
+      mode: "setup",
+      customer: "cus_setup",
+      success_url: "https://example.com/success",
+      cancel_url: "https://example.com/cancel",
+      metadata: {},
+      currency: "usd",
+    });
+  });
+
+  test("rejects payment_method_types on endive API versions", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+    });
+
+    await expect(
+      client.createCheckoutSession(
+        { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+        {
+          priceId: "price_monthly",
+          mode: "subscription",
+          successUrl: "https://example.com/success",
+          cancelUrl: "https://example.com/cancel",
+          params: { payment_method_types: ["card"] } as any,
+        },
+      ),
+    ).rejects.toThrow(/allowed_payment_method_types/);
+    expect(stripeMocks.createCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  test("passes payment_method_types through when pinned to an older API version", async () => {
+    stripeMocks.createCheckoutSession.mockClear();
+    stripeMocks.createCheckoutSession.mockResolvedValue({
+      id: "cs_dahlia",
+      url: "https://checkout.stripe.com/c/pay/cs_dahlia",
+    });
+    const client = new StripeSubscriptions(components.stripe, {
+      STRIPE_SECRET_KEY: "sk_test_123",
+      apiVersion: "2026-08-26.dahlia",
+    });
+
+    await client.createCheckoutSession(
+      { runAction: vi.fn(), runMutation: vi.fn(), runQuery: vi.fn() },
+      {
+        priceId: "price_monthly",
+        mode: "subscription",
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+        params: { payment_method_types: ["card"] } as any,
+      },
+    );
+
+    expect(stripeMocks.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_method_types: ["card"] }),
+    );
+  });
+
   test("keeps redirect URLs for legacy hosted checkout ui mode", async () => {
     stripeMocks.createCheckoutSession.mockResolvedValue({
       id: "cs_hosted",
@@ -425,51 +748,196 @@ describe("StripeSubscriptions client", () => {
   });
 });
 
+function getWebhookHandler(config: RegisterRoutesConfig) {
+  const route = vi.fn();
+  registerRoutes({ route } as unknown as HttpRouter, components.stripe, config);
+  return route.mock.calls[0][0].handler._handler as (
+    ctx: unknown,
+    request: Request,
+  ) => Promise<Response>;
+}
+
+function webhookRequest() {
+  return new Request("https://example.convex.site/stripe/webhook", {
+    method: "POST",
+    headers: { "stripe-signature": "t=1,v1=sig_leak" },
+    body: JSON.stringify({ email: "leak@example.com" }),
+  });
+}
+
+function captureConsole() {
+  const spies = (["error", "warn", "log"] as const).map((method) =>
+    vi.spyOn(console, method).mockImplementation(() => {}),
+  );
+  return {
+    stop: () => {
+      const output = spies
+        .flatMap((spy) => spy.mock.calls.flat())
+        .map((arg) =>
+          arg instanceof Error
+            ? `${arg.message} ${arg.stack} ${JSON.stringify(arg)}`
+            : typeof arg === "string"
+              ? arg
+              : JSON.stringify(arg),
+        )
+        .join("\n");
+      spies.forEach((spy) => spy.mockRestore());
+      return output;
+    },
+  };
+}
+
 describe("registerRoutes", () => {
   test("registerRoutes function should be exported", () => {
     expect(typeof registerRoutes).toBe("function");
   });
+
+  test("signature failures log a fixed message and reach onError", async () => {
+    const signatureError = Object.assign(new Error("bad signature"), {
+      payload: '{"email":"leak@example.com"}',
+      header: "t=1,v1=sig_leak",
+    });
+    stripeMocks.constructEvent.mockRejectedValueOnce(signatureError);
+    const onError = vi.fn();
+    const handler = getWebhookHandler({
+      STRIPE_WEBHOOK_SECRET: "whsec_test",
+      STRIPE_SECRET_KEY: "sk_test_123",
+      onError,
+    });
+    const logs = captureConsole();
+
+    const response = await handler({}, webhookRequest());
+
+    const output = logs.stop();
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Webhook signature verification failed");
+    expect(output).toContain("Webhook signature verification failed");
+    expect(output).not.toMatch(/leak@example\.com|sig_leak|bad signature/);
+    expect(onError).toHaveBeenCalledWith({}, signatureError, {
+      stage: "signature",
+    });
+  });
+
+  test("processing failures return 500 and log only the event ID and type", async () => {
+    const event = {
+      id: "evt_leak",
+      type: "customer.created",
+      data: {
+        object: { id: "cus_leak", email: "leak@example.com", metadata: {} },
+      },
+    };
+    stripeMocks.constructEvent.mockResolvedValueOnce(event);
+    const mutationError = Object.assign(
+      new Error("Object: {email: leak@example.com}"),
+      { raw: { headers: { "request-id": "req_leak" } } },
+    );
+    const ctx = {
+      runQuery: vi.fn().mockResolvedValue(false),
+      runMutation: vi.fn().mockRejectedValue(mutationError),
+    };
+    const onError = vi.fn();
+    const onEvent = vi.fn();
+    const handler = getWebhookHandler({
+      STRIPE_WEBHOOK_SECRET: "whsec_test",
+      STRIPE_SECRET_KEY: "sk_test_123",
+      onError,
+      onEvent,
+    });
+    const logs = captureConsole();
+
+    const response = await handler(ctx, webhookRequest());
+
+    const output = logs.stop();
+    expect(response.status).toBe(500);
+    expect(output).toContain("evt_leak");
+    expect(output).toContain("customer.created");
+    expect(output).not.toMatch(/leak@example\.com|req_leak|sig_leak/);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(ctx, mutationError, {
+      stage: "processing",
+      event,
+    });
+  });
+
+  test("a throwing onError handler does not change the response", async () => {
+    stripeMocks.constructEvent.mockRejectedValueOnce(
+      new Error("bad signature"),
+    );
+    const handler = getWebhookHandler({
+      STRIPE_WEBHOOK_SECRET: "whsec_test",
+      STRIPE_SECRET_KEY: "sk_test_123",
+      onError: () => {
+        throw new Error("reporter down");
+      },
+    });
+    const logs = captureConsole();
+
+    const response = await handler({}, webhookRequest());
+
+    expect(logs.stop()).not.toContain("reporter down");
+    expect(response.status).toBe(400);
+  });
 });
+
+function paymentIntentEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "payment_intent.succeeded",
+    data: {
+      object: {
+        id: "pi_test",
+        customer: "cus_test",
+        amount: 4900,
+        currency: "usd",
+        status: "succeeded",
+        created: 1_700_000_123,
+        metadata: {},
+        ...overrides,
+      },
+    },
+  };
+}
+
+function mockStripeForInvoiceLookup(options: {
+  invoicePayments?: Array<{ invoice: unknown }>;
+  invoice?: Record<string, unknown>;
+}) {
+  return {
+    invoicePayments: {
+      list: vi.fn().mockResolvedValue({ data: options.invoicePayments ?? [] }),
+    },
+    invoices: {
+      retrieve: vi.fn().mockResolvedValue(options.invoice),
+    },
+  };
+}
 
 describe("processEvent", () => {
   test("records one-time payments even when the customer recently subscribed", async () => {
     const processEvent = (clientModule as any).processEvent;
     const ctx = {
       runMutation: vi.fn().mockResolvedValue(null),
-      runQuery: vi.fn().mockResolvedValue([
-        {
-          _creationTime: Date.now(),
-          stripeSubscriptionId: "sub_recent",
-          stripeCustomerId: "cus_recent",
-          status: "active",
-        },
-      ]),
+      runQuery: vi.fn(),
     };
+    const stripe = mockStripeForInvoiceLookup({});
 
     await processEvent(
       ctx,
       components.stripe,
-      {
-        type: "payment_intent.succeeded",
-        data: {
-          object: {
-            id: "pi_one_time_after_sub",
-            customer: "cus_recent",
-            amount: 4900,
-            currency: "usd",
-            status: "succeeded",
-            created: 1_700_000_123,
-            metadata: { userId: "user_recent" },
-          },
-        },
-      },
-      {
-        invoices: {
-          retrieve: vi.fn(),
-        },
-      },
+      paymentIntentEvent({
+        id: "pi_one_time_after_sub",
+        customer: "cus_recent",
+        metadata: { userId: "user_recent" },
+      }),
+      stripe,
     );
 
+    expect(stripe.invoicePayments.list).toHaveBeenCalledWith({
+      payment: {
+        type: "payment_intent",
+        payment_intent: "pi_one_time_after_sub",
+      },
+      limit: 1,
+    });
     expect(ctx.runMutation).toHaveBeenCalledWith(
       components.stripe.private.handlePaymentIntentSucceeded,
       {
@@ -536,5 +1004,227 @@ describe("processEvent", () => {
         },
       },
     );
+  });
+
+  test("skips subscription payments linked through invoice payments", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const stripe = mockStripeForInvoiceLookup({
+      invoicePayments: [{ invoice: "in_renewal" }],
+      invoice: {
+        id: "in_renewal",
+        parent: { subscription_details: { subscription: "sub_renewal" } },
+      },
+    });
+
+    await processEvent(ctx, components.stripe, paymentIntentEvent(), stripe);
+
+    expect(stripe.invoices.retrieve).toHaveBeenCalledWith("in_renewal");
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  test("records payments for invoices that are not part of a subscription", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const stripe = mockStripeForInvoiceLookup({
+      invoicePayments: [{ invoice: { id: "in_one_off", parent: null } }],
+    });
+
+    await processEvent(ctx, components.stripe, paymentIntentEvent(), stripe);
+
+    expect(stripe.invoices.retrieve).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handlePaymentIntentSucceeded,
+      expect.objectContaining({ stripePaymentIntentId: "pi_test" }),
+    );
+  });
+
+  test("uses the legacy PaymentIntent.invoice field when the payload has it", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const stripe = mockStripeForInvoiceLookup({
+      invoice: { id: "in_legacy", subscription: "sub_legacy" },
+    });
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      paymentIntentEvent({ invoice: "in_legacy" }),
+      stripe,
+    );
+
+    expect(stripe.invoicePayments.list).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  test("propagates invoice lookup failures instead of recording the payment", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const stripe = mockStripeForInvoiceLookup({});
+    stripe.invoicePayments.list.mockRejectedValue(new Error("Stripe is down"));
+
+    await expect(
+      processEvent(ctx, components.stripe, paymentIntentEvent(), stripe),
+    ).rejects.toThrow("Stripe is down");
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  test("propagates checkout invoice sync failures so Stripe retries", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = {
+      runMutation: vi.fn().mockResolvedValue(null),
+      runQuery: vi.fn(),
+    };
+    const stripe = {
+      subscriptions: {
+        retrieve: vi.fn().mockRejectedValue(new Error("invalid api key")),
+      },
+    };
+
+    await expect(
+      processEvent(
+        ctx,
+        components.stripe,
+        {
+          type: "checkout.session.completed",
+          data: {
+            object: {
+              id: "cs_sub",
+              customer: "cus_sub",
+              mode: "subscription",
+              subscription: "sub_checkout",
+              metadata: {},
+            },
+          },
+        },
+        stripe,
+      ),
+    ).rejects.toThrow("invalid api key");
+  });
+
+  test("charge.refunded passes the refund totals to the component", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "charge.refunded",
+        data: {
+          object: {
+            id: "ch_refunded",
+            payment_intent: { id: "pi_refunded" },
+            amount_refunded: 1500,
+            refunded: false,
+          },
+        },
+      },
+      {},
+    );
+
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleChargeRefunded,
+      {
+        stripePaymentIntentId: "pi_refunded",
+        amountRefunded: 1500,
+        refunded: false,
+      },
+    );
+  });
+
+  test("charge.refunded without a payment intent is skipped", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const logs = captureConsole();
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "charge.refunded",
+        data: {
+          object: {
+            id: "ch_no_intent",
+            payment_intent: null,
+            amount_refunded: 500,
+            refunded: true,
+          },
+        },
+      },
+      {},
+    );
+
+    expect(logs.stop()).toContain("ch_no_intent");
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  test("skips invoices that have no customer", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const logs = captureConsole();
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "invoice.finalized",
+        data: {
+          object: {
+            id: "in_no_customer",
+            customer: null,
+            status: "open",
+            amount_due: 100,
+            amount_paid: 0,
+            created: 1_700_000_002,
+            metadata: {},
+          },
+        },
+      },
+      {},
+    );
+
+    expect(logs.stop()).toContain("in_no_customer");
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  test("reads expanded customer objects on subscription events", async () => {
+    const processEvent = (clientModule as any).processEvent;
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      {
+        type: "customer.subscription.created",
+        created: 1_800_000_123,
+        data: {
+          object: {
+            id: "sub_expanded",
+            customer: { id: "cus_expanded", object: "customer" },
+            status: "active",
+            cancel_at_period_end: false,
+            cancel_at: null,
+            metadata: {},
+            items: {
+              data: [
+                {
+                  current_period_end: 1_800_000_000,
+                  quantity: 1,
+                  price: { id: "price_expanded" },
+                },
+              ],
+            },
+          },
+        },
+      },
+      {},
+    );
+
+    expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
+      stripeSubscriptionId: "sub_expanded",
+      stripeCustomerId: "cus_expanded",
+      eventCreated: 1_800_000_123,
+    });
   });
 });

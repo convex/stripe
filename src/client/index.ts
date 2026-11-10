@@ -1,14 +1,21 @@
-import { httpActionGeneric } from "convex/server";
+import {
+  httpActionGeneric,
+  type GenericActionCtx,
+  type GenericDataModel,
+} from "convex/server";
 import StripeSDK from "stripe";
 import type {
   MutationCtx,
   ActionCtx,
+  CreateCheckoutSessionArgs,
   HttpRouter,
   RegisterRoutesConfig,
   StripeEventHandlers,
   StripeApiVersion,
+  StripeWebhookErrorDetails,
 } from "./types.js";
 import type { ComponentApi } from "../component/_generated/component.js";
+import schema, { vCustomer, vSubscription } from "../component/schema.js";
 
 type StripeClientConfig = ConstructorParameters<typeof StripeSDK>[1];
 type StripeClientConfigWithApiVersion = Omit<
@@ -20,7 +27,21 @@ type StripeClientConfigWithApiVersion = Omit<
 
 export type StripeComponent = ComponentApi;
 
-export type { RegisterRoutesConfig, StripeEventHandlers };
+// Each customer deleted within 24 hours of its creation costs one attempt.
+const MAX_CREATE_CUSTOMER_ATTEMPTS = 5;
+
+export type {
+  CreateCheckoutSessionArgs,
+  RegisterRoutesConfig,
+  StripeEventHandlers,
+  StripeWebhookErrorDetails,
+};
+
+/** Validators for the documents the component's queries return. */
+export { vCustomer, vSubscription };
+export const vCheckoutSession = schema.tables.checkout_sessions.validator;
+export const vPayment = schema.tables.payments.validator;
+export const vInvoice = schema.tables.invoices.validator;
 
 /**
  * Stripe Component Client
@@ -78,10 +99,13 @@ export class StripeSubscriptions {
       quantity: args.quantity,
     });
 
-    await ctx.runMutation(this.component.private.updateSubscriptionQuantityInternal, {
-      stripeSubscriptionId: args.stripeSubscriptionId,
-      quantity: args.quantity,
-    });
+    await ctx.runMutation(
+      this.component.private.updateSubscriptionQuantityInternal,
+      {
+        stripeSubscriptionId: args.stripeSubscriptionId,
+        quantity: args.quantity,
+      },
+    );
 
     return null;
   }
@@ -115,20 +139,7 @@ export class StripeSubscriptions {
       );
     }
 
-    // Update local database immediately (don't wait for webhook)
-    const item = subscription.items.data[0];
-    await ctx.runMutation(this.component.private.handleSubscriptionUpdated, {
-      stripeSubscriptionId: subscription.id,
-      stripeCustomerId: getStripeObjectId(subscription.customer),
-      status: subscription.status,
-      currentPeriodEnd: item?.current_period_end || 0,
-      cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
-      cancelAt: subscription.cancel_at || undefined,
-      quantity: item?.quantity ?? 1,
-      priceId: item?.price?.id || undefined,
-      metadata: subscription.metadata || {},
-    });
-
+    await this.syncSubscription(ctx, subscription);
     return null;
   }
 
@@ -142,17 +153,46 @@ export class StripeSubscriptions {
       stripeSubscriptionId: string;
     },
   ) {
-    const stripe = this.stripe();
-
-    // Reactivate by setting cancel_at_period_end to false
-    const subscription = await stripe.subscriptions.update(
+    const subscription = await this.stripe().subscriptions.update(
       args.stripeSubscriptionId,
       {
         cancel_at_period_end: false,
       },
     );
 
-    // Update local database immediately
+    await this.syncSubscription(ctx, subscription);
+    return null;
+  }
+
+  /**
+   * Update a subscription's metadata in Stripe and sync it to Convex.
+   *
+   * Stripe is the source of truth for metadata: webhooks overwrite the copy in
+   * Convex, so change it here rather than with the component's
+   * `updateSubscriptionMetadata` mutation. Stripe merges keys, and setting a
+   * key to `""` removes it. `orgId` and `userId` keys also update the indexed
+   * lookup fields.
+   */
+  async updateSubscriptionMetadata(
+    ctx: ActionCtx,
+    args: {
+      stripeSubscriptionId: string;
+      metadata: Record<string, string>;
+    },
+  ) {
+    const subscription = await this.stripe().subscriptions.update(
+      args.stripeSubscriptionId,
+      { metadata: args.metadata },
+    );
+
+    await this.syncSubscription(ctx, subscription);
+    return null;
+  }
+
+  private async syncSubscription(
+    ctx: ActionCtx,
+    subscription: StripeSDK.Subscription,
+  ) {
     const item = subscription.items.data[0];
     await ctx.runMutation(this.component.private.handleSubscriptionUpdated, {
       stripeSubscriptionId: subscription.id,
@@ -165,8 +205,6 @@ export class StripeSubscriptions {
       priceId: item?.price?.id || undefined,
       metadata: subscription.metadata || {},
     });
-
-    return null;
   }
 
   // ============================================================================
@@ -174,44 +212,33 @@ export class StripeSubscriptions {
   // ============================================================================
 
   /**
-   * Create a Stripe Checkout session for one-time payments or subscriptions.
+   * Create a Stripe Checkout session for a one-time payment, a subscription,
+   * or (with `mode: "setup"`) saving a payment method.
    *
    * Use `params` to pass additional Stripe Checkout Session parameters directly
    * to the Stripe API. Values in `params` override constructed defaults except
-   * `mode`, which remains controlled by the top-level argument.
+   * `mode`, which remains controlled by the top-level argument. Setup mode
+   * needs `params.currency` unless `params.allowed_payment_method_types` is
+   * set.
    */
-  async createCheckoutSession(
-    ctx: ActionCtx,
-    args: {
-      priceId: string;
-      customerId?: string;
-      mode: "payment" | "subscription" | "setup";
-      successUrl: string;
-      cancelUrl: string;
-      quantity?: number;
-      metadata?: Record<string, string>;
-      /** Metadata to attach to the subscription (only for mode: "subscription") */
-      subscriptionMetadata?: Record<string, string>;
-      /** Metadata to attach to the payment intent (only for mode: "payment") */
-      paymentIntentMetadata?: Record<string, string>;
-      /** Additional Stripe Checkout Session parameters passed through to the API */
-      params?: Partial<StripeSDK.Checkout.SessionCreateParams>;
-    },
-  ) {
+  async createCheckoutSession(ctx: ActionCtx, args: CreateCheckoutSessionArgs) {
+    assertNoPaymentMethodTypes(args.params, this._stripeConfig?.apiVersion);
     const stripe = this.stripe();
 
     const sessionParams: StripeSDK.Checkout.SessionCreateParams = {
       mode: args.mode,
-      line_items: [
-        {
-          price: args.priceId,
-          quantity: args.quantity ?? 1,
-        },
-      ],
       success_url: args.successUrl,
       cancel_url: args.cancelUrl,
       metadata: args.metadata || {},
     };
+    if (args.mode !== "setup") {
+      sessionParams.line_items = [
+        {
+          price: args.priceId,
+          quantity: args.quantity ?? 1,
+        },
+      ];
+    }
 
     if (args.customerId) {
       sessionParams.customer = args.customerId;
@@ -246,7 +273,10 @@ export class StripeSubscriptions {
         },
       };
     }
-    if (sessionParams.payment_intent_data || paramsOverrides.payment_intent_data) {
+    if (
+      sessionParams.payment_intent_data ||
+      paramsOverrides.payment_intent_data
+    ) {
       finalParams.payment_intent_data = {
         ...sessionParams.payment_intent_data,
         ...paramsOverrides.payment_intent_data,
@@ -316,7 +346,13 @@ export class StripeSubscriptions {
 
   /**
    * Get or create a Stripe customer for a user.
-   * Checks existing customers, subscriptions, and payments to avoid duplicates.
+   *
+   * Looks for a customer linked to `userId`, then for one linked through the
+   * user's subscriptions or payments. With `matchByEmail`, it then reuses an
+   * unclaimed customer with the same email and links it to the user. Only
+   * enable that if your auth provider verifies email addresses, or anyone can
+   * claim a customer by signing up with its email. Customers deleted in Stripe
+   * are never returned.
    */
   async getOrCreateCustomer(
     ctx: ActionCtx,
@@ -324,9 +360,9 @@ export class StripeSubscriptions {
       userId: string;
       email?: string;
       name?: string;
+      matchByEmail?: boolean;
     },
   ) {
-    // Check the customers table directly by userId (uses by_user_id index)
     const existingByUserId = await ctx.runQuery(
       this.component.public.getCustomerByUserId,
       { userId: args.userId },
@@ -338,13 +374,39 @@ export class StripeSubscriptions {
       };
     }
 
-    // Fallback: check by email (uses by_email index)
-    if (args.email) {
+    const existingSubs = await ctx.runQuery(
+      this.component.public.listSubscriptionsByUserId,
+      { userId: args.userId },
+    );
+    const existingPayments = await ctx.runQuery(
+      this.component.public.listPaymentsByUserId,
+      { userId: args.userId },
+    );
+    const linkedCustomerIds = [
+      ...existingSubs.map((subscription) => subscription.stripeCustomerId),
+      ...existingPayments.map((payment) => payment.stripeCustomerId),
+    ];
+    for (const customerId of new Set(linkedCustomerIds)) {
+      if (!customerId) continue;
+      const customer = await ctx.runQuery(this.component.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (!customer?.deleted) {
+        return { customerId, isNew: false };
+      }
+    }
+
+    if (args.matchByEmail && args.email) {
       const existingByEmail = await ctx.runQuery(
         this.component.public.getCustomerByEmail,
         { email: args.email },
       );
-      if (existingByEmail) {
+      if (existingByEmail && !existingByEmail.userId) {
+        await this.linkCustomerToUser(
+          ctx,
+          existingByEmail.stripeCustomerId,
+          args.userId,
+        );
         return {
           customerId: existingByEmail.stripeCustomerId,
           isNew: false,
@@ -352,35 +414,46 @@ export class StripeSubscriptions {
       }
     }
 
-    // Check if customer exists by userId in subscriptions
-    const existingSubs = await ctx.runQuery(
-      this.component.public.listSubscriptionsByUserId,
-      { userId: args.userId },
-    );
-
-    if (existingSubs.length > 0) {
-      return { customerId: existingSubs[0].stripeCustomerId, isNew: false };
+    // Concurrent calls for one user share an idempotency key, so they all get
+    // the same customer. Stripe replays a key's response for 24 hours, even
+    // after that customer is deleted. When that happens, move to a key derived
+    // from the deleted customer, which concurrent calls also agree on.
+    let idempotencyKey = args.userId;
+    for (let attempt = 0; attempt < MAX_CREATE_CUSTOMER_ATTEMPTS; attempt++) {
+      const { customerId } = await this.createCustomer(ctx, {
+        email: args.email,
+        name: args.name,
+        metadata: { userId: args.userId },
+        idempotencyKey,
+      });
+      const stored = await ctx.runQuery(this.component.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (!stored?.deleted) {
+        return { customerId, isNew: true };
+      }
+      idempotencyKey = `${args.userId}_after_${customerId}`;
     }
-
-    // Check existing payments
-    const existingPayments = await ctx.runQuery(
-      this.component.public.listPaymentsByUserId,
-      { userId: args.userId },
+    throw new Error(
+      `Could not create a Stripe customer for user ${args.userId}: ` +
+        "Stripe kept returning customers that have since been deleted.",
     );
+  }
 
-    if (existingPayments.length > 0 && existingPayments[0].stripeCustomerId) {
-      return { customerId: existingPayments[0].stripeCustomerId, isNew: false };
-    }
-
-    // Create a new customer with idempotency key to prevent race conditions
-    const result = await this.createCustomer(ctx, {
-      email: args.email,
-      name: args.name,
-      metadata: { userId: args.userId },
-      idempotencyKey: args.userId,
+  private async linkCustomerToUser(
+    ctx: ActionCtx,
+    stripeCustomerId: string,
+    userId: string,
+  ) {
+    const customer = await this.stripe().customers.update(stripeCustomerId, {
+      metadata: { userId },
     });
-
-    return { customerId: result.customerId, isNew: true };
+    await ctx.runMutation(this.component.public.createOrUpdateCustomer, {
+      stripeCustomerId,
+      email: customer.email ?? undefined,
+      name: customer.name ?? undefined,
+      metadata: customer.metadata,
+    });
   }
 
   /**
@@ -444,6 +517,7 @@ export function registerRoutes(
 ) {
   const webhookPath = config?.webhookPath ?? "/stripe/webhook";
   const eventHandlers = config?.events ?? {};
+  const deduplicateEvents = config?.deduplicateEvents ?? true;
 
   http.route({
     path: webhookPath,
@@ -481,7 +555,6 @@ export function registerRoutes(
           : undefined,
       );
 
-      // Verify webhook signature
       let event: StripeSDK.Event;
       try {
         event = await stripe.webhooks.constructEventAsync(
@@ -489,16 +562,28 @@ export function registerRoutes(
           signature,
           webhookSecret,
         );
-      } catch (err) {
-        console.error("❌ Webhook signature verification failed:", err);
-        return new Response(
-          `Webhook signature verification failed: ${err instanceof Error ? err.message : String(err)}`,
-          { status: 400 },
-        );
+      } catch (error) {
+        console.error("❌ Webhook signature verification failed");
+        await reportWebhookError(ctx, config, error, { stage: "signature" });
+        return new Response("Webhook signature verification failed", {
+          status: 400,
+        });
       }
 
-      // Process the event with default handlers
       try {
+        if (deduplicateEvents) {
+          const alreadyProcessed = await ctx.runQuery(
+            component.private.isWebhookEventProcessed,
+            { stripeEventId: event.id },
+          );
+          if (alreadyProcessed) {
+            console.log(
+              `⏭️ Skipping webhook event ${event.id} (${event.type}) - already processed`,
+            );
+            return webhookReceivedResponse();
+          }
+        }
+
         await processEvent(ctx, component, event, stripe);
 
         // Call generic event handler if provided
@@ -514,17 +599,49 @@ export function registerRoutes(
         if (customHandler) {
           await customHandler(ctx, event);
         }
+
+        if (deduplicateEvents) {
+          await ctx.runMutation(component.private.markWebhookEventProcessed, {
+            stripeEventId: event.id,
+            type: event.type,
+            created: event.created,
+          });
+        }
       } catch (error) {
-        console.error("❌ Error processing webhook:", error);
+        console.error(
+          `❌ Error processing webhook event ${event.id} (${event.type})`,
+        );
+        await reportWebhookError(ctx, config, error, {
+          stage: "processing",
+          event,
+        });
         return new Response("Error processing webhook", { status: 500 });
       }
 
-      return new Response(JSON.stringify({ received: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return webhookReceivedResponse();
     }),
   });
+}
+
+function webhookReceivedResponse() {
+  return new Response(JSON.stringify({ received: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+async function reportWebhookError(
+  ctx: GenericActionCtx<GenericDataModel>,
+  config: RegisterRoutesConfig | undefined,
+  error: unknown,
+  details: StripeWebhookErrorDetails,
+) {
+  if (!config?.onError) return;
+  try {
+    await config.onError(ctx, error, details);
+  } catch {
+    console.error("❌ Stripe webhook onError handler threw");
+  }
 }
 
 /**
@@ -551,6 +668,7 @@ export async function processEvent(
         email: customer.email || undefined,
         name: customer.name || undefined,
         metadata: customer.metadata,
+        eventCreated: event.created,
       });
       break;
     }
@@ -559,6 +677,7 @@ export async function processEvent(
       const customer = event.data.object as StripeSDK.Customer;
       await ctx.runMutation(component.private.handleCustomerDeleted, {
         stripeCustomerId: customer.id,
+        eventCreated: event.created,
       });
       break;
     }
@@ -569,7 +688,7 @@ export async function processEvent(
 
       await ctx.runMutation(component.private.handleSubscriptionCreated, {
         stripeSubscriptionId: subscription.id,
-        stripeCustomerId: subscription.customer as string,
+        stripeCustomerId: getStripeObjectId(subscription.customer),
         status: subscription.status,
         currentPeriodEnd: item?.current_period_end || 0,
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
@@ -577,6 +696,7 @@ export async function processEvent(
         quantity: subscription.items.data[0]?.quantity ?? 1,
         priceId: item?.price?.id || "",
         metadata: subscription.metadata || {},
+        eventCreated: event.created,
       });
       break;
     }
@@ -587,7 +707,7 @@ export async function processEvent(
 
       await ctx.runMutation(component.private.handleSubscriptionUpdated, {
         stripeSubscriptionId: subscription.id,
-        stripeCustomerId: subscription.customer as string,
+        stripeCustomerId: getStripeObjectId(subscription.customer),
         status: subscription.status,
         currentPeriodEnd: item?.current_period_end || 0,
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
@@ -595,6 +715,7 @@ export async function processEvent(
         quantity: subscription.items.data[0]?.quantity ?? 1,
         priceId: item?.price?.id || undefined,
         metadata: subscription.metadata || {},
+        eventCreated: event.created,
       });
       break;
     }
@@ -607,56 +728,44 @@ export async function processEvent(
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
         currentPeriodEnd: item?.current_period_end ?? undefined,
         cancelAt: subscription.cancel_at ?? undefined,
+        eventCreated: event.created,
       });
       break;
     }
 
     case "checkout.session.completed": {
       const session = event.data.object as StripeSDK.Checkout.Session;
+      const stripeCustomerId = getStripeObjectId(session.customer);
       await ctx.runMutation(component.private.handleCheckoutSessionCompleted, {
         stripeCheckoutSessionId: session.id,
-        stripeCustomerId: session.customer
-          ? (session.customer as string)
-          : undefined,
+        stripeCustomerId,
         mode: session.mode || "payment",
         metadata: session.metadata || undefined,
       });
 
-      // For payment mode, link the payment to the customer if we have both
+      const stripePaymentIntentId = getStripeObjectId(session.payment_intent);
       if (
         session.mode === "payment" &&
-        session.customer &&
-        session.payment_intent
+        stripeCustomerId &&
+        stripePaymentIntentId
       ) {
         await ctx.runMutation(component.private.updatePaymentCustomer, {
-          stripePaymentIntentId: session.payment_intent as string,
-          stripeCustomerId: session.customer as string,
+          stripePaymentIntentId,
+          stripeCustomerId,
         });
       }
 
-      // For subscription mode, fetch and store the latest invoice
-      if (session.mode === "subscription" && session.subscription) {
-        try {
-          const subscription = await stripe.subscriptions.retrieve(
-            session.subscription as string,
-          );
-          if (subscription.latest_invoice) {
-            const invoice = await stripe.invoices.retrieve(
-              subscription.latest_invoice as string,
-            );
-            await ctx.runMutation(component.private.handleInvoiceCreated, {
-              stripeInvoiceId: invoice.id,
-              stripeCustomerId: invoice.customer as string,
-              stripeSubscriptionId: subscription.id,
-              status: invoice.status || "paid",
-              amountDue: invoice.amount_due,
-              amountPaid: invoice.amount_paid,
-              created: invoice.created,
-              metadata: getInvoiceMetadata(invoice),
-            });
-          }
-        } catch (err) {
-          console.error("Error fetching invoice for subscription:", err);
+      const stripeSubscriptionId = getStripeObjectId(session.subscription);
+      if (session.mode === "subscription" && stripeSubscriptionId) {
+        const subscription =
+          await stripe.subscriptions.retrieve(stripeSubscriptionId);
+        const latestInvoiceId = getStripeObjectId(subscription.latest_invoice);
+        if (latestInvoiceId) {
+          const invoice = await stripe.invoices.retrieve(latestInvoiceId);
+          await syncInvoice(ctx, component, invoice, {
+            fallbackStatus: "paid",
+            stripeSubscriptionId: subscription.id,
+          });
         }
       }
       break;
@@ -668,15 +777,9 @@ export async function processEvent(
     case "invoice.paid":
     case "invoice.payment_succeeded": {
       const invoice = event.data.object as StripeSDK.Invoice;
-      await ctx.runMutation(component.private.handleInvoiceCreated, {
-        stripeInvoiceId: invoice.id,
-        stripeCustomerId: invoice.customer as string,
+      await syncInvoice(ctx, component, invoice, {
+        fallbackStatus: "open",
         stripeSubscriptionId: getInvoiceSubscriptionId(invoice),
-        status: invoice.status || "open",
-        amountDue: invoice.amount_due,
-        amountPaid: invoice.amount_paid,
-        created: invoice.created,
-        metadata: getInvoiceMetadata(invoice),
       });
       break;
     }
@@ -690,30 +793,18 @@ export async function processEvent(
     }
 
     case "payment_intent.succeeded": {
-      const paymentIntent = event.data.object as any;
+      const paymentIntent = event.data.object as StripeSDK.PaymentIntent;
 
-      // Check if this is a subscription payment
-      if (paymentIntent.invoice) {
-        try {
-          const invoice = await stripe.invoices.retrieve(
-            paymentIntent.invoice as string,
-          );
-          if (getInvoiceSubscriptionId(invoice)) {
-            console.log(
-              "⏭️ Skipping payment_intent.succeeded - subscription payment",
-            );
-            break;
-          }
-        } catch (err) {
-          console.error("Error checking invoice:", err);
-        }
+      if (await getPaymentIntentSubscriptionId(stripe, paymentIntent)) {
+        console.log(
+          "⏭️ Skipping payment_intent.succeeded - subscription payment",
+        );
+        break;
       }
 
       await ctx.runMutation(component.private.handlePaymentIntentSucceeded, {
         stripePaymentIntentId: paymentIntent.id,
-        stripeCustomerId: paymentIntent.customer
-          ? (paymentIntent.customer as string)
-          : undefined,
+        stripeCustomerId: getStripeObjectId(paymentIntent.customer),
         amount: paymentIntent.amount,
         currency: paymentIntent.currency,
         status: paymentIntent.status,
@@ -723,35 +814,101 @@ export async function processEvent(
       break;
     }
 
+    case "charge.refunded": {
+      const charge = event.data.object as StripeSDK.Charge;
+      const stripePaymentIntentId = getStripeObjectId(charge.payment_intent);
+      if (!stripePaymentIntentId) {
+        console.log(
+          `ℹ️ Skipping refund of charge ${charge.id} without a payment intent`,
+        );
+        break;
+      }
+      await ctx.runMutation(component.private.handleChargeRefunded, {
+        stripePaymentIntentId,
+        amountRefunded: charge.amount_refunded,
+        refunded: charge.refunded,
+      });
+      break;
+    }
+
     default:
       console.log(`ℹ️ Unhandled event type: ${event.type}`);
   }
 }
 
-function getInvoiceSubscriptionId(invoice: StripeSDK.Invoice) {
-  const parentSubscription = invoice.parent?.subscription_details?.subscription;
-  if (typeof parentSubscription === "string") {
-    return parentSubscription;
+async function syncInvoice(
+  ctx: MutationCtx | ActionCtx,
+  component: ComponentApi,
+  invoice: StripeSDK.Invoice,
+  options: { fallbackStatus: string; stripeSubscriptionId?: string },
+) {
+  const stripeCustomerId = getStripeObjectId(invoice.customer);
+  if (!stripeCustomerId) {
+    console.log(`ℹ️ Skipping invoice ${invoice.id} without a customer`);
+    return;
   }
-  if (parentSubscription && "id" in parentSubscription) {
-    return parentSubscription.id;
-  }
-
-  const legacySubscription = (
-    invoice as StripeSDK.Invoice & {
-      subscription?: string | StripeSDK.Subscription | null;
-    }
-  ).subscription;
-  if (typeof legacySubscription === "string") {
-    return legacySubscription;
-  }
-  if (legacySubscription && "id" in legacySubscription) {
-    return legacySubscription.id;
-  }
-  return undefined;
+  await ctx.runMutation(component.private.handleInvoiceCreated, {
+    stripeInvoiceId: invoice.id,
+    stripeCustomerId,
+    stripeSubscriptionId: options.stripeSubscriptionId,
+    status: invoice.status || options.fallbackStatus,
+    amountDue: invoice.amount_due,
+    amountPaid: invoice.amount_paid,
+    created: invoice.created,
+    metadata: getInvoiceMetadata(invoice),
+  });
 }
 
-function getStripeObjectId(object: string | { id: string }) {
+/**
+ * API versions from 2025-03-31.basil onward no longer include
+ * `PaymentIntent.invoice`; the link only exists through Invoice Payments.
+ */
+async function getPaymentIntentSubscriptionId(
+  stripe: StripeSDK,
+  paymentIntent: StripeSDK.PaymentIntent,
+) {
+  let invoice = (
+    paymentIntent as StripeSDK.PaymentIntent & {
+      invoice?: string | StripeSDK.Invoice | null;
+    }
+  ).invoice;
+  if (!invoice) {
+    const invoicePayments = await stripe.invoicePayments.list({
+      payment: { type: "payment_intent", payment_intent: paymentIntent.id },
+      limit: 1,
+    });
+    const linkedInvoice = invoicePayments.data[0]?.invoice;
+    if (
+      !linkedInvoice ||
+      (typeof linkedInvoice !== "string" && linkedInvoice.deleted)
+    ) {
+      return undefined;
+    }
+    invoice = linkedInvoice;
+  }
+  const resolvedInvoice =
+    typeof invoice === "string"
+      ? await stripe.invoices.retrieve(invoice)
+      : invoice;
+  return getInvoiceSubscriptionId(resolvedInvoice);
+}
+
+function getInvoiceSubscriptionId(invoice: StripeSDK.Invoice) {
+  const legacyInvoice = invoice as StripeSDK.Invoice & {
+    subscription?: string | StripeSDK.Subscription | null;
+  };
+  return (
+    getStripeObjectId(invoice.parent?.subscription_details?.subscription) ??
+    getStripeObjectId(legacyInvoice.subscription)
+  );
+}
+
+function getStripeObjectId(object: string | { id: string }): string;
+function getStripeObjectId(
+  object: string | { id: string } | null | undefined,
+): string | undefined;
+function getStripeObjectId(object: string | { id: string } | null | undefined) {
+  if (!object) return undefined;
   return typeof object === "string" ? object : object.id;
 }
 
@@ -761,6 +918,25 @@ function getInvoiceMetadata(invoice: StripeSDK.Invoice) {
     return invoiceMetadata;
   }
   return invoice.parent?.subscription_details?.metadata || {};
+}
+
+const ENDIVE_API_VERSION_DATE = "2026-09-30";
+
+function assertNoPaymentMethodTypes(
+  params: object | undefined,
+  configuredApiVersion: StripeApiVersion | undefined,
+) {
+  if (!params || !("payment_method_types" in params)) return;
+  const apiVersion =
+    configuredApiVersion === undefined
+      ? StripeSDK.API_VERSION
+      : configuredApiVersion;
+  if (typeof apiVersion === "string" && apiVersion >= ENDIVE_API_VERSION_DATE) {
+    throw new Error(
+      "Stripe removed `payment_method_types` from Checkout Sessions in API version 2026-09-30.endive. " +
+        "Pass `allowed_payment_method_types` in `params` instead, or leave it out to use dynamic payment methods.",
+    );
+  }
 }
 
 function isNonHostedCheckoutUiMode(

@@ -1,17 +1,30 @@
 import { v } from "convex/values";
-import { action, mutation, query } from "./_generated/server.js";
-import schema from "./schema.js";
+import { mutation, query } from "./_generated/server.js";
+import schema, { vCustomer, vSubscription } from "./schema.js";
 
 // ============================================================================
 // VALIDATOR HELPERS
 // ============================================================================
 
 // Reusable validators that omit system fields (_id, _creationTime)
-const customerValidator = schema.tables.customers.validator;
-const subscriptionValidator = schema.tables.subscriptions.validator;
+const customerValidator = vCustomer;
+const subscriptionValidator = vSubscription;
 const checkoutSessionValidator = schema.tables.checkout_sessions.validator;
 const paymentValidator = schema.tables.payments.validator;
 const invoiceValidator = schema.tables.invoices.validator;
+
+/** Drops the system fields and the component's webhook-ordering field. */
+function withoutInternalFields<
+  T extends { _id: unknown; _creationTime: number; lastEventCreated?: number },
+>(document: T) {
+  const {
+    _id,
+    _creationTime,
+    lastEventCreated: _lastEventCreated,
+    ...data
+  } = document;
+  return data;
+}
 
 // ============================================================================
 // PUBLIC QUERIES
@@ -30,45 +43,45 @@ export const getCustomer = query({
         q.eq("stripeCustomerId", args.stripeCustomerId),
       )
       .unique();
-    if (!customer) return null;
-    const { _id, _creationTime, ...data } = customer;
-    return data;
+    return customer ? withoutInternalFields(customer) : null;
   },
 });
 
 /**
- * Get a customer by their email address.
- * Uses the by_email index for efficient lookup.
+ * Get the most recently created customer with this email address.
+ * Customers deleted in Stripe are skipped.
  */
 export const getCustomerByEmail = query({
   args: { email: v.string() },
   returns: v.union(customerValidator, v.null()),
   handler: async (ctx, args) => {
-    const customer = await ctx.db
+    const customers = ctx.db
       .query("customers")
       .withIndex("by_email", (q) => q.eq("email", args.email))
-      .first();
-    if (!customer) return null;
-    const { _id, _creationTime, ...data } = customer;
-    return data;
+      .order("desc");
+    for await (const customer of customers) {
+      if (!customer.deleted) return withoutInternalFields(customer);
+    }
+    return null;
   },
 });
 
 /**
- * Get a customer by their user ID.
- * Uses the by_user_id index for efficient lookup.
+ * Get the most recently created customer for a user ID.
+ * Customers deleted in Stripe are skipped.
  */
 export const getCustomerByUserId = query({
   args: { userId: v.string() },
   returns: v.union(customerValidator, v.null()),
   handler: async (ctx, args) => {
-    const customer = await ctx.db
+    const customers = ctx.db
       .query("customers")
       .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
-      .first();
-    if (!customer) return null;
-    const { _id, _creationTime, ...data } = customer;
-    return data;
+      .order("desc");
+    for await (const customer of customers) {
+      if (!customer.deleted) return withoutInternalFields(customer);
+    }
+    return null;
   },
 });
 
@@ -85,9 +98,7 @@ export const getSubscription = query({
         q.eq("stripeSubscriptionId", args.stripeSubscriptionId),
       )
       .unique();
-    if (!subscription) return null;
-    const { _id, _creationTime, ...data } = subscription;
-    return data;
+    return subscription ? withoutInternalFields(subscription) : null;
   },
 });
 
@@ -104,25 +115,48 @@ export const listSubscriptions = query({
         q.eq("stripeCustomerId", args.stripeCustomerId),
       )
       .collect();
-    return subscriptions.map(({ _id, _creationTime, ...data }) => data);
+    return subscriptions.map(withoutInternalFields);
   },
 });
 
+const SUBSCRIPTION_STATUS_PRIORITY: Record<string, number> = {
+  active: 0,
+  trialing: 0,
+  past_due: 1,
+  unpaid: 1,
+  paused: 1,
+  incomplete: 2,
+};
+
+function subscriptionStatusPriority(status: string) {
+  return SUBSCRIPTION_STATUS_PRIORITY[status] ?? 3;
+}
+
 /**
- * Get a subscription by organization ID.
- * Useful for looking up subscriptions by custom orgId.
+ * Get the current subscription for an organization ID.
+ * When an org has several, prefers active or trialing, then past due, unpaid,
+ * or paused, then incomplete, then anything else. Ties go to the newest.
  */
 export const getSubscriptionByOrgId = query({
   args: { orgId: v.string() },
   returns: v.union(subscriptionValidator, v.null()),
   handler: async (ctx, args) => {
-    const subscription = await ctx.db
+    const subscriptions = await ctx.db
       .query("subscriptions")
       .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
-      .first();
-    if (!subscription) return null;
-    const { _id, _creationTime, ...data } = subscription;
-    return data;
+      .order("desc")
+      .collect();
+    let current: (typeof subscriptions)[number] | undefined;
+    for (const subscription of subscriptions) {
+      if (
+        !current ||
+        subscriptionStatusPriority(subscription.status) <
+          subscriptionStatusPriority(current.status)
+      ) {
+        current = subscription;
+      }
+    }
+    return current ? withoutInternalFields(current) : null;
   },
 });
 
@@ -137,7 +171,7 @@ export const listSubscriptionsByOrgId = query({
       .query("subscriptions")
       .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
       .collect();
-    return subscriptions.map(({ _id, _creationTime, ...data }) => data);
+    return subscriptions.map(withoutInternalFields);
   },
 });
 
@@ -153,7 +187,7 @@ export const listSubscriptionsByUserId = query({
       .query("subscriptions")
       .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
       .collect();
-    return subscriptions.map(({ _id, _creationTime, ...data }) => data);
+    return subscriptions.map(withoutInternalFields);
   },
 });
 
@@ -333,6 +367,10 @@ export const createOrUpdateCustomer = mutation({
     const metadata = args.metadata || {};
     const userId = metadata.userId as string | undefined;
 
+    if (existing?.deleted) {
+      // Stripe deleted this customer. Leave its scrubbed row alone.
+      return args.stripeCustomerId;
+    }
     if (existing) {
       await ctx.db.patch("customers", existing._id, {
         ...(args.email !== undefined && { email: args.email }),
@@ -354,14 +392,17 @@ export const createOrUpdateCustomer = mutation({
 });
 
 /**
- * Update subscription metadata for custom lookups.
- * You can provide orgId and userId for efficient indexed lookups,
- * and additional data in the metadata field.
+ * Link a subscription to an orgId or userId for indexed lookups. These links
+ * stay until Stripe metadata sets a different `orgId` or `userId`.
+ *
+ * `metadata` here only changes the copy in Convex, and the next Stripe webhook
+ * for the subscription replaces it. To change metadata, use
+ * `StripeSubscriptions.updateSubscriptionMetadata`, which writes to Stripe.
  */
 export const updateSubscriptionMetadata = mutation({
   args: {
     stripeSubscriptionId: v.string(),
-    metadata: v.any(),
+    metadata: v.optional(v.any()),
     orgId: v.optional(v.string()),
     userId: v.optional(v.string()),
   },
@@ -381,31 +422,11 @@ export const updateSubscriptionMetadata = mutation({
     }
 
     await ctx.db.patch("subscriptions", subscription._id, {
-      metadata: args.metadata,
+      ...(args.metadata !== undefined && { metadata: args.metadata }),
       ...(args.orgId !== undefined && { orgId: args.orgId }),
       ...(args.userId !== undefined && { userId: args.userId }),
     });
 
-    return null;
-  },
-});
-
-/**
- * Update subscription quantity (for seat-based pricing).
- * This component action cannot safely update Stripe directly because component
- * actions do not have reliable access to STRIPE_SECRET_KEY.
- * Use the StripeSubscriptions client to update Stripe, then sync Convex.
- */
-export const updateSubscriptionQuantity = action({
-  args: {
-    stripeSubscriptionId: v.string(),
-    quantity: v.number(),
-  },
-  returns: v.null(),
-  handler: async () => {
-    throw new Error(
-      "updateSubscriptionQuantity must be called through StripeSubscriptions.updateSubscriptionQuantity() so the Stripe secret key stays outside component actions",
-    );
     return null;
   },
 });

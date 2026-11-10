@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as crons from "../crons.js";
 import type * as private_ from "../private.js";
 import type * as public_ from "../public.js";
 
@@ -19,6 +20,7 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  crons: typeof crons;
   private: typeof private_;
   public: typeof public_;
 }> = anyApi as any;

@@ -7,7 +7,7 @@ into your Convex application.
 
 [![npm version](https://badge.fury.io/js/@convex-dev%2Fstripe.svg)](https://badge.fury.io/js/@convex-dev%2Fstripe)
 
-Requires Node.js 18 or later, matching the Stripe Node SDK v22 runtime
+Requires Node.js 20 or later, matching the Stripe Node SDK v23 runtime
 requirement.
 
 ## Features
@@ -47,7 +47,8 @@ export default app;
 
 ### 3. Set Up Environment Variables
 
-Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings → Environment Variables:
+Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings →
+Environment Variables:
 
 | Variable                | Description                                             |
 | ----------------------- | ------------------------------------------------------- |
@@ -56,14 +57,17 @@ Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings 
 
 ### 4. Configure Stripe Webhooks
 
-1. Go to [Stripe Dashboard → Developers → Webhooks](https://dashboard.stripe.com/test/webhooks)
+1. Go to
+   [Stripe Dashboard → Developers → Webhooks](https://dashboard.stripe.com/test/webhooks)
 2. Click **"Add endpoint"**
 3. Enter your webhook URL:
    ```
    https://<your-convex-deployment>.convex.site/stripe/webhook
    ```
-   (Find your deployment name in the Convex dashboard - it's the part before `.convex.cloud` in your URL)
+   (Find your deployment name in the Convex dashboard - it's the part before
+   `.convex.cloud` in your URL)
 4. Select these events:
+   - `charge.refunded`
    - `checkout.session.completed`
    - `customer.created`
    - `customer.updated`
@@ -77,7 +81,6 @@ Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings 
    - `invoice.paid`
    - `invoice.payment_failed`
    - `payment_intent.succeeded`
-   - `payment_intent.payment_failed`
 5. Click **"Add endpoint"**
 6. Copy the **Signing secret** and add it as `STRIPE_WEBHOOK_SECRET` in Convex
 
@@ -95,7 +98,7 @@ const http = httpRouter();
 // Register Stripe webhook handler at /stripe/webhook
 registerRoutes(http, components.stripe, {
   webhookPath: "/stripe/webhook",
-  apiVersion: "2026-04-22.dahlia", // Optional
+  apiVersion: "2026-10-28.endive", // Optional
 });
 
 export default http;
@@ -181,40 +184,51 @@ import { StripeSubscriptions } from "@convex-dev/stripe";
 
 const stripeClient = new StripeSubscriptions(components.stripe, {
   STRIPE_SECRET_KEY: "sk_...", // Optional, defaults to process.env.STRIPE_SECRET_KEY
-  apiVersion: "2026-04-22.dahlia", // Optional Stripe API version
+  apiVersion: "2026-10-28.endive", // Optional Stripe API version
 });
 ```
 
+Without `apiVersion`, API calls use the version pinned by the installed Stripe
+SDK, which changes when the SDK's major version changes. Set `apiVersion` here
+and in `registerRoutes` to control when you upgrade.
+
 #### Methods
 
-| Method | Description |
-|--------|-------------|
-| `createCheckoutSession()` | Create a Stripe Checkout session |
-| `createCustomerPortalSession()` | Generate a Customer Portal URL |
-| `createCustomer()` | Create a new Stripe customer |
-| `getOrCreateCustomer()` | Get existing or create new customer |
-| `cancelSubscription()` | Cancel a subscription |
-| `reactivateSubscription()` | Reactivate a subscription set to cancel |
-| `updateSubscriptionQuantity()` | Update seat count |
+| Method                          | Description                             |
+| ------------------------------- | --------------------------------------- |
+| `createCheckoutSession()`       | Create a Stripe Checkout session        |
+| `createCustomerPortalSession()` | Generate a Customer Portal URL          |
+| `createCustomer()`              | Create a new Stripe customer            |
+| `getOrCreateCustomer()`         | Get existing or create new customer     |
+| `cancelSubscription()`          | Cancel a subscription                   |
+| `reactivateSubscription()`      | Reactivate a subscription set to cancel |
+| `updateSubscriptionQuantity()`  | Update seat count                       |
+| `updateSubscriptionMetadata()`  | Update metadata in Stripe and sync it   |
+
+Stripe is the source of truth for subscription metadata, and webhooks overwrite
+the copy in Convex. Change metadata with
+`stripeClient.updateSubscriptionMetadata(ctx, { stripeSubscriptionId, metadata })`,
+which writes to Stripe first. The component's `updateSubscriptionMetadata`
+mutation is for linking a subscription to an `orgId` or `userId` in Convex only.
 
 ### createCheckoutSession
 
 ```typescript
 await stripeClient.createCheckoutSession(ctx, {
   priceId: "price_...",
-  customerId: "cus_...",           // Optional
-  mode: "subscription",             // "subscription" | "payment" | "setup"
+  customerId: "cus_...", // Optional
+  mode: "subscription", // "subscription" | "payment" | "setup"
   successUrl: "https://...",
   cancelUrl: "https://...",
-  quantity: 1,                      // Optional, default 1
-  metadata: {},                     // Optional, session metadata
-  subscriptionMetadata: {},         // Optional, attached to subscription
-  paymentIntentMetadata: {},        // Optional, attached to payment intent
+  quantity: 1, // Optional, default 1
+  metadata: {}, // Optional, session metadata
+  subscriptionMetadata: {}, // Optional, attached to subscription
+  paymentIntentMetadata: {}, // Optional, attached to payment intent
   params: {
     allow_promotion_codes: true,
     ui_mode: "embedded_page",
     return_url: "https://...",
-  },                                // Optional Stripe Checkout Session params
+  }, // Optional Stripe Checkout Session params
 });
 ```
 
@@ -225,6 +239,46 @@ argument. For non-hosted Checkout UI modes, the component omits `successUrl` and
 `cancelUrl` from the Stripe request and expects redirect behavior to be supplied
 through Stripe-supported params such as `return_url`.
 
+On API version `2026-09-30.endive` and later, Stripe rejects
+`payment_method_types`, so `createCheckoutSession` throws if `params` includes
+it. Use `allowed_payment_method_types`, or leave it out to use dynamic payment
+methods.
+
+To save a payment method without charging, use `mode: "setup"` without a
+`priceId`. Stripe needs `params.currency` in setup mode unless you set
+`params.allowed_payment_method_types`:
+
+```typescript
+await stripeClient.createCheckoutSession(ctx, {
+  mode: "setup",
+  customerId: "cus_...",
+  successUrl: "https://...",
+  cancelUrl: "https://...",
+  params: { currency: "usd" },
+});
+```
+
+### getOrCreateCustomer
+
+```typescript
+const { customerId, isNew } = await stripeClient.getOrCreateCustomer(ctx, {
+  userId: identity.subject,
+  email: identity.email, // Optional
+  name: identity.name, // Optional
+  matchByEmail: false, // Optional, default false
+});
+```
+
+Returns the customer linked to `userId`, or the customer on the user's
+subscriptions or payments. Otherwise it creates a new customer with
+`metadata.userId` set. Customers deleted in Stripe are never returned.
+
+With `matchByEmail: true`, it first reuses a customer with the same email that
+isn't linked to any user yet, and links it to this user. Only turn this on if
+your auth provider verifies email addresses. Otherwise someone can sign up with
+another person's email and take over their Stripe customer, including saved
+payment methods and invoices.
+
 ### Component Queries
 
 Access data directly via the component's public queries:
@@ -232,10 +286,13 @@ Access data directly via the component's public queries:
 ```typescript
 import { query } from "./_generated/server";
 import { components } from "./_generated/api";
+import { vPayment, vSubscription } from "@convex-dev/stripe";
+import { v } from "convex/values";
 
 // List subscriptions for a user
 export const getUserSubscriptions = query({
   args: {},
+  returns: v.array(vSubscription),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
@@ -250,6 +307,7 @@ export const getUserSubscriptions = query({
 // List payments for a user
 export const getUserPayments = query({
   args: {},
+  returns: v.array(vPayment),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
@@ -261,43 +319,90 @@ export const getUserPayments = query({
 });
 ```
 
+`vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, and `vInvoice`
+match the documents these queries return. Use them in your `returns` validators
+so they stay in sync when the component adds fields.
+
+These queries return data for whatever ID you pass, so check that the signed-in
+user is allowed to see it before calling them, as the examples above do with
+`identity.subject`.
+
 ### Available Public Queries
 
-| Query                       | Arguments               | Description                       |
-| --------------------------- | ----------------------- | --------------------------------- |
-| `getCustomer`               | `stripeCustomerId`      | Get a customer by Stripe ID       |
-| `listSubscriptions`         | `stripeCustomerId`      | List subscriptions for a customer |
-| `listSubscriptionsByUserId` | `userId`                | List subscriptions for a user     |
-| `getSubscription`           | `stripeSubscriptionId`  | Get a subscription by ID          |
-| `getSubscriptionByOrgId`    | `orgId`                 | Get subscription for an org       |
-| `getPayment`                | `stripePaymentIntentId` | Get a payment by ID               |
-| `listPayments`              | `stripeCustomerId`      | List payments for a customer      |
-| `listPaymentsByUserId`      | `userId`                | List payments for a user          |
-| `listPaymentsByOrgId`       | `orgId`                 | List payments for an org          |
-| `listInvoices`              | `stripeCustomerId`      | List invoices for a customer      |
-| `listInvoicesByUserId`      | `userId`                | List invoices for a user          |
-| `listInvoicesByOrgId`       | `orgId`                 | List invoices for an org          |
+| Query                       | Arguments                 | Description                                     |
+| --------------------------- | ------------------------- | ----------------------------------------------- |
+| `getCustomer`               | `stripeCustomerId`        | Get a customer by Stripe ID                     |
+| `getCustomerByUserId`       | `userId`                  | Newest customer for a user, skipping deleted    |
+| `getCustomerByEmail`        | `email`                   | Newest customer with an email, skipping deleted |
+| `getSubscription`           | `stripeSubscriptionId`    | Get a subscription by ID                        |
+| `listSubscriptions`         | `stripeCustomerId`        | List subscriptions for a customer               |
+| `listSubscriptionsByUserId` | `userId`                  | List subscriptions for a user                   |
+| `listSubscriptionsByOrgId`  | `orgId`                   | List subscriptions for an org                   |
+| `getSubscriptionByOrgId`    | `orgId`                   | An org's live subscription, preferring active   |
+| `getPayment`                | `stripePaymentIntentId`   | Get a payment by ID                             |
+| `listPayments`              | `stripeCustomerId`        | List payments for a customer                    |
+| `listPaymentsByUserId`      | `userId`                  | List payments for a user                        |
+| `listPaymentsByOrgId`       | `orgId`                   | List payments for an org                        |
+| `listInvoices`              | `stripeCustomerId`        | List invoices for a customer                    |
+| `listInvoicesByUserId`      | `userId`                  | List invoices for a user                        |
+| `listInvoicesByOrgId`       | `orgId`                   | List invoices for an org                        |
+| `getCheckoutSession`        | `stripeCheckoutSessionId` | Get a completed checkout session by ID          |
+| `listCheckoutSessions`      | `stripeCustomerId`        | List completed checkout sessions for a customer |
+
+### Public Mutations
+
+| Mutation                     | Arguments                                                | Description                                               |
+| ---------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| `createOrUpdateCustomer`     | `stripeCustomerId`, `email?`, `name?`, `metadata?`       | Store a customer; `metadata.userId` links it to a user    |
+| `updateSubscriptionMetadata` | `stripeSubscriptionId`, `metadata?`, `orgId?`, `userId?` | Link a subscription to an org or user for indexed lookups |
 
 ## Webhook Events
 
 The component automatically handles these Stripe webhook events:
 
-| Event                           | Action                              |
-| ------------------------------- | ----------------------------------- |
-| `customer.created`              | Creates customer record             |
-| `customer.updated`              | Updates customer record             |
-| `customer.deleted`              | Scrubs customer PII                 |
-| `customer.subscription.created` | Creates subscription record         |
-| `customer.subscription.updated` | Updates subscription record         |
-| `customer.subscription.deleted` | Marks subscription as canceled      |
-| `payment_intent.succeeded`      | Creates payment record              |
-| `payment_intent.payment_failed` | Updates payment status              |
-| `invoice.created`               | Creates invoice record              |
-| `invoice.finalized`             | Upserts invoice record              |
-| `invoice.updated`               | Mirrors invoice metadata changes    |
-| `invoice.paid`                  | Upserts invoice as paid             |
-| `invoice.payment_failed`        | Marks invoice as failed             |
-| `checkout.session.completed`    | Handles completed checkout sessions |
+| Event                           | Action                                                       |
+| ------------------------------- | ------------------------------------------------------------ |
+| `customer.created`              | Creates customer record                                      |
+| `customer.updated`              | Updates or creates customer record                           |
+| `customer.deleted`              | Scrubs customer PII and marks it deleted                     |
+| `customer.subscription.created` | Creates subscription record                                  |
+| `customer.subscription.updated` | Updates or creates subscription record                       |
+| `customer.subscription.deleted` | Marks subscription as canceled                               |
+| `payment_intent.succeeded`      | Creates payment record, skipping subscription payments       |
+| `charge.refunded`               | Records the refunded amount on the payment                   |
+| `invoice.created`               | Creates invoice record                                       |
+| `invoice.finalized`             | Upserts invoice record                                       |
+| `invoice.updated`               | Upserts invoice record, including metadata changes           |
+| `invoice.paid`                  | Upserts invoice as paid                                      |
+| `invoice.payment_succeeded`     | Upserts invoice record                                       |
+| `invoice.payment_failed`        | Keeps the invoice `open`; never downgrades a paid invoice    |
+| `checkout.session.completed`    | Records the session and syncs its first subscription invoice |
+
+Stripe can deliver an event more than once and doesn't guarantee order. The
+component handles both:
+
+- After an event is synced and your handlers succeed, its ID goes into the
+  `webhook_events` table. Later deliveries of the same event get a 200 without
+  running the sync or your handlers again, and the route logs that it skipped
+  them. A daily cron deletes entries after 30 days.
+- Customers and subscriptions store the `created` time of the newest event
+  applied to them in `lastEventCreated`, and older events for the same object
+  are ignored. The public queries don't return that field. A canceled
+  subscription is never moved back to another status.
+
+Resending an event from the Stripe Dashboard or with `stripe events resend`
+reuses its ID. An event whose processing failed was never recorded, so resending
+it works. To replay events that were already processed, for example after
+changing what one of your handlers does, turn the check off while you resend
+them:
+
+```typescript
+registerRoutes(http, components.stripe, {
+  deduplicateEvents: false, // Defaults to true
+});
+```
+
+With it off, the route neither checks nor records event IDs.
 
 ### Custom Webhook Handlers
 
@@ -313,9 +418,16 @@ const http = httpRouter();
 
 registerRoutes(http, components.stripe, {
   events: {
-    "customer.subscription.updated": async (ctx, event: Stripe.CustomerSubscriptionUpdatedEvent) => {
+    "customer.subscription.updated": async (
+      ctx,
+      event: Stripe.CustomerSubscriptionUpdatedEvent,
+    ) => {
       const subscription = event.data.object;
-      console.log("Subscription updated:", subscription.id, subscription.status);
+      console.log(
+        "Subscription updated:",
+        subscription.id,
+        subscription.status,
+      );
       // Add custom logic here
     },
   },
@@ -328,33 +440,53 @@ registerRoutes(http, components.stripe, {
 export default http;
 ```
 
+If processing an event fails, the route responds with a 500 so Stripe retries
+the delivery. The component only logs a fixed message plus the event ID and
+type, because errors can contain the raw payload, the signature header, or
+customer fields. To see the underlying error, pass `onError` and send it to your
+own logging or monitoring:
+
+```typescript
+registerRoutes(http, components.stripe, {
+  onError: async (ctx, error, { stage, event }) => {
+    // stage is "signature" or "processing"; event is set once verified
+    reportToMonitoring(error, { stage, eventId: event?.id });
+  },
+});
+```
+
 ## Database Schema
 
 The component creates these tables in its namespace:
 
 ### customers
 
-| Field              | Type    | Description        |
-| ------------------ | ------- | ------------------ |
-| `stripeCustomerId` | string  | Stripe customer ID |
-| `email`            | string? | Customer email     |
-| `name`             | string? | Customer name      |
-| `metadata`         | object? | Custom metadata    |
+| Field              | Type     | Description                               |
+| ------------------ | -------- | ----------------------------------------- |
+| `stripeCustomerId` | string   | Stripe customer ID                        |
+| `email`            | string?  | Customer email                            |
+| `name`             | string?  | Customer name                             |
+| `metadata`         | object?  | Custom metadata                           |
+| `userId`           | string?  | Linked user ID, from `metadata`           |
+| `deleted`          | boolean? | `true` once deleted in Stripe             |
+| `lastEventCreated` | number?  | `created` time of the newest event synced |
 
 ### subscriptions
 
-| Field                  | Type    | Description               |
-| ---------------------- | ------- | ------------------------- |
-| `stripeSubscriptionId` | string  | Stripe subscription ID    |
-| `stripeCustomerId`     | string  | Customer ID               |
-| `status`               | string  | Subscription status       |
-| `priceId`              | string  | Price ID                  |
-| `quantity`             | number? | Seat count                |
-| `currentPeriodEnd`     | number  | Period end timestamp      |
-| `cancelAtPeriodEnd`    | boolean | Will cancel at period end |
-| `userId`               | string? | Linked user ID            |
-| `orgId`                | string? | Linked org ID             |
-| `metadata`             | object? | Custom metadata           |
+| Field                  | Type    | Description                               |
+| ---------------------- | ------- | ----------------------------------------- |
+| `stripeSubscriptionId` | string  | Stripe subscription ID                    |
+| `stripeCustomerId`     | string  | Customer ID                               |
+| `status`               | string  | Subscription status                       |
+| `priceId`              | string  | Price ID                                  |
+| `quantity`             | number? | Seat count                                |
+| `currentPeriodEnd`     | number  | Period end timestamp                      |
+| `cancelAtPeriodEnd`    | boolean | Will cancel at period end                 |
+| `cancelAt`             | number? | Scheduled cancel time                     |
+| `userId`               | string? | Linked user ID                            |
+| `orgId`                | string? | Linked org ID                             |
+| `metadata`             | object? | Metadata mirrored from Stripe             |
+| `lastEventCreated`     | number? | `created` time of the newest event synced |
 
 ### checkout_sessions
 
@@ -368,17 +500,25 @@ The component creates these tables in its namespace:
 
 ### payments
 
-| Field                   | Type    | Description       |
-| ----------------------- | ------- | ----------------- |
-| `stripePaymentIntentId` | string  | Payment intent ID |
-| `stripeCustomerId`      | string? | Customer ID       |
-| `amount`                | number  | Amount in cents   |
-| `currency`              | string  | Currency code     |
-| `status`                | string  | Payment status    |
-| `created`               | number  | Created timestamp |
-| `userId`                | string? | Linked user ID    |
-| `orgId`                 | string? | Linked org ID     |
-| `metadata`              | object? | Custom metadata   |
+| Field                   | Type     | Description                     |
+| ----------------------- | -------- | ------------------------------- |
+| `stripePaymentIntentId` | string   | Payment intent ID               |
+| `stripeCustomerId`      | string?  | Customer ID                     |
+| `amount`                | number   | Amount in cents                 |
+| `currency`              | string   | Currency code                   |
+| `status`                | string   | Payment status                  |
+| `created`               | number   | Created timestamp               |
+| `amountRefunded`        | number?  | Total refunded so far, in cents |
+| `refunded`              | boolean? | `true` once fully refunded      |
+| `userId`                | string?  | Linked user ID                  |
+| `orgId`                 | string?  | Linked org ID                   |
+| `metadata`              | object?  | Custom metadata                 |
+
+Stripe leaves a payment's `status` as `succeeded` after a refund. Check
+`refunded` and `amountRefunded` to show refunds. They are only set once a
+`charge.refunded` event arrives, so add that event to your webhook endpoint.
+Refunds of subscription charges aren't recorded, because subscription payments
+aren't stored in this table.
 
 ### invoices
 
@@ -395,13 +535,22 @@ The component creates these tables in its namespace:
 | `orgId`                | string? | Linked org ID     |
 | `metadata`             | object? | Invoice metadata  |
 
+### webhook_events
+
+| Field           | Type   | Description                               |
+| --------------- | ------ | ----------------------------------------- |
+| `stripeEventId` | string | Stripe event ID                           |
+| `type`          | string | Event type                                |
+| `created`       | number | Stripe `event.created` (seconds)          |
+| `processedAt`   | number | When the component finished processing it |
+
 ## Example App
 
 Check out the full example app in the [`example/`](./example) directory:
 
 ```bash
-git clone https://github.com/get-convex/convex-stripe
-cd convex-stripe
+git clone https://github.com/get-convex/stripe
+cd stripe
 npm install
 npm run dev
 ```
@@ -463,6 +612,8 @@ Check the Convex logs in your dashboard for errors. Common issues:
 - Wrong webhook URL (should be
   `https://<deployment>.convex.site/stripe/webhook`)
 - Missing events in webhook configuration
+- A restricted `STRIPE_SECRET_KEY` that can't read invoices, invoice payments,
+  or subscriptions. The webhook route looks these up in Stripe.
 
 ## License
 

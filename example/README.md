@@ -1,7 +1,7 @@
 # Benji's Store - Example App
 
-A complete example app demonstrating the `@convex-dev/stripe` component with Clerk
-authentication.
+A complete example app demonstrating the `@convex-dev/stripe` component with
+Clerk authentication.
 
 ![Benji's Store Screenshot](https://via.placeholder.com/800x400?text=Benji%27s+Store)
 
@@ -18,7 +18,7 @@ authentication.
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - A [Convex](https://convex.dev) account
 - A [Stripe](https://stripe.com) account (test mode)
 - A [Clerk](https://clerk.com) account
@@ -133,6 +133,7 @@ npx convex dev --once
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
    - `payment_intent.succeeded`
+   - `charge.refunded`
    - `payment_intent.payment_failed`
    - `invoice.created`
    - `invoice.finalized`

@@ -36,6 +36,11 @@ function getStatusBadge(status: string) {
     pending: { label: "Pending", class: "status-warning" },
     paid: { label: "Paid", class: "status-active" },
     open: { label: "Open", class: "status-warning" },
+    refunded: { label: "Refunded", class: "status-canceled" },
+    partially_refunded: {
+      label: "Partially refunded",
+      class: "status-warning",
+    },
   };
   const statusInfo = statusMap[status] || {
     label: status,
@@ -875,7 +880,15 @@ function ProfilePage({
                 <span className="order-amount">
                   {formatCurrency(payment.amount, payment.currency)}
                 </span>
-                <span>{getStatusBadge(payment.status)}</span>
+                <span>
+                  {getStatusBadge(
+                    payment.refunded
+                      ? "refunded"
+                      : payment.amountRefunded
+                        ? "partially_refunded"
+                        : payment.status,
+                  )}
+                </span>
               </div>
             ))}
           </div>
