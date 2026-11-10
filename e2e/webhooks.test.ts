@@ -398,6 +398,64 @@ describe("webhook route on a real Convex backend", () => {
     expect(await stored()).toMatchObject({ paymentStatus: "paid" });
   });
 
+  // Stripe sends several events for one object within the same second, for
+  // example when a subscription is paid. They used to fail with "Documents
+  // read from or written to the table changed while this mutation was being
+  // run" (#24).
+  test.each([
+    [
+      "customer.updated",
+      (id: string, userId: string) => customerObject(id, userId),
+    ],
+    [
+      "customer.subscription.updated",
+      (id: string, userId: string) =>
+        subscriptionObject(`sub_burst_${id}`, id, userId, "active", {
+          items: {
+            data: [
+              {
+                current_period_end: 1_900_000_000,
+                quantity: 2,
+                price: { id: "price_e2e_team" },
+              },
+            ],
+          },
+        }),
+    ],
+    [
+      "invoice.updated",
+      (id: string, userId: string) => ({
+        id: `in_burst_${id}`,
+        object: "invoice",
+        customer: id,
+        status: "paid",
+        amount_due: 2900,
+        amount_paid: 2900,
+        created: 1_800_000_000,
+        metadata: { userId },
+      }),
+    ],
+  ] as const)(
+    "accepts a burst of 40 identical %s events for one object",
+    async (type, object) => {
+      const userId = uniqueId("user");
+      const id = uniqueId("cus");
+      const created = nowSeconds();
+      // Store the object first, so every event in the burst is an update.
+      await deliver(stripeEvent(type, object(id, userId), { created }));
+
+      const responses = await Promise.all(
+        Array.from({ length: 40 }, () =>
+          deliver(stripeEvent(type, object(id, userId), { created })),
+        ),
+      );
+
+      expect(responses.map((response) => response.status)).toEqual(
+        Array(40).fill(200),
+      );
+    },
+  );
+
   test("runs the handlers once when an event is delivered twice at the same time", async () => {
     const customerId = uniqueId("cus");
     const event = stripeEvent(
