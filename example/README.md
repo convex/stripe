@@ -134,12 +134,15 @@ npx convex dev --once
    - `customer.subscription.deleted`
    - `payment_intent.succeeded`
    - `charge.refunded`
+   - `refund.failed`
    - `payment_intent.payment_failed`
    - `invoice.created`
    - `invoice.finalized`
    - `invoice.paid`
    - `invoice.payment_failed`
    - `checkout.session.completed`
+   - `checkout.session.async_payment_succeeded`
+   - `checkout.session.async_payment_failed`
 
 5. Click **"Add endpoint"**
 

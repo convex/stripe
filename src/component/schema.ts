@@ -40,6 +40,9 @@ const schema = defineSchema({
     stripeCustomerId: v.optional(v.string()),
     status: v.string(),
     mode: v.string(),
+    // Stripe's `payment_status`. A session can be "complete" while a delayed
+    // payment method, such as a bank debit, is still "unpaid".
+    paymentStatus: v.optional(v.string()),
     metadata: v.optional(v.any()),
   })
     .index("by_stripe_checkout_session_id", ["stripeCheckoutSessionId"])
@@ -86,7 +89,11 @@ const schema = defineSchema({
     stripeEventId: v.string(),
     type: v.string(),
     created: v.number(),
+    // When the event finished, or when a delivery claimed it if `processing`
+    // is set.
     processedAt: v.number(),
+    // Set while a delivery is handling the event.
+    processing: v.optional(v.boolean()),
   })
     .index("by_stripe_event_id", ["stripeEventId"])
     .index("by_processed_at", ["processedAt"]),

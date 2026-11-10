@@ -198,7 +198,7 @@ export class StripeSubscriptions {
       stripeSubscriptionId: subscription.id,
       stripeCustomerId: getStripeObjectId(subscription.customer),
       status: subscription.status,
-      currentPeriodEnd: item?.current_period_end || 0,
+      currentPeriodEnd: getSubscriptionPeriodEnd(subscription) || 0,
       cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
       cancelAt: subscription.cancel_at || undefined,
       quantity: item?.quantity ?? 1,
@@ -217,7 +217,10 @@ export class StripeSubscriptions {
    *
    * Use `params` to pass additional Stripe Checkout Session parameters directly
    * to the Stripe API. Values in `params` override constructed defaults except
-   * `mode`, which remains controlled by the top-level argument. Setup mode
+   * `mode`, which remains controlled by the top-level argument, and metadata,
+   * which is merged with the `metadata`, `subscriptionMetadata`, and
+   * `paymentIntentMetadata` arguments. Those arguments win on shared keys, so
+   * `params` can't replace a `userId` or `orgId` link. Setup mode
    * needs `params.currency` unless `params.allowed_payment_method_types` is
    * set.
    */
@@ -262,6 +265,10 @@ export class StripeSubscriptions {
     const finalParams: StripeSDK.Checkout.SessionCreateParams = {
       ...sessionParams,
       ...paramsOverrides,
+      metadata: {
+        ...(paramsOverrides.metadata ?? {}),
+        ...sessionParams.metadata,
+      },
     };
     if (sessionParams.subscription_data || paramsOverrides.subscription_data) {
       finalParams.subscription_data = {
@@ -399,7 +406,7 @@ export class StripeSubscriptions {
     if (args.matchByEmail && args.email) {
       const existingByEmail = await ctx.runQuery(
         this.component.public.getCustomerByEmail,
-        { email: args.email },
+        { email: args.email, unclaimed: true },
       );
       if (existingByEmail && !existingByEmail.userId) {
         await this.linkCustomerToUser(
@@ -570,18 +577,36 @@ export function registerRoutes(
         });
       }
 
+      let claimed = false;
       try {
         if (deduplicateEvents) {
-          const alreadyProcessed = await ctx.runQuery(
-            component.private.isWebhookEventProcessed,
-            { stripeEventId: event.id },
+          // Claiming is one transaction, so when Stripe delivers an event
+          // twice at once, only one delivery runs the handlers.
+          const claim = await ctx.runMutation(
+            component.private.claimWebhookEvent,
+            {
+              stripeEventId: event.id,
+              type: event.type,
+              created: event.created,
+            },
           );
-          if (alreadyProcessed) {
+          if (claim === "processed") {
             console.log(
               `⏭️ Skipping webhook event ${event.id} (${event.type}) - already processed`,
             );
             return webhookReceivedResponse();
           }
+          if (claim === "in_progress") {
+            console.log(
+              `⏳ Webhook event ${event.id} (${event.type}) is already being processed`,
+            );
+            // Not a 2xx, so Stripe retries. By then the other delivery has
+            // either finished, or failed and released the event.
+            return new Response("Event is already being processed", {
+              status: 409,
+            });
+          }
+          claimed = true;
         }
 
         await processEvent(ctx, component, event, stripe);
@@ -611,6 +636,19 @@ export function registerRoutes(
         console.error(
           `❌ Error processing webhook event ${event.id} (${event.type})`,
         );
+        if (claimed) {
+          try {
+            await ctx.runMutation(component.private.releaseWebhookEvent, {
+              stripeEventId: event.id,
+            });
+          } catch {
+            // The claim expires by itself, so Stripe's later retries still
+            // get through.
+            console.error(
+              `❌ Could not release webhook event ${event.id} (${event.type})`,
+            );
+          }
+        }
         await reportWebhookError(ctx, config, error, {
           stage: "processing",
           event,
@@ -690,7 +728,7 @@ export async function processEvent(
         stripeSubscriptionId: subscription.id,
         stripeCustomerId: getStripeObjectId(subscription.customer),
         status: subscription.status,
-        currentPeriodEnd: item?.current_period_end || 0,
+        currentPeriodEnd: getSubscriptionPeriodEnd(subscription) || 0,
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
         cancelAt: subscription.cancel_at ?? undefined,
         quantity: subscription.items.data[0]?.quantity ?? 1,
@@ -709,7 +747,7 @@ export async function processEvent(
         stripeSubscriptionId: subscription.id,
         stripeCustomerId: getStripeObjectId(subscription.customer),
         status: subscription.status,
-        currentPeriodEnd: item?.current_period_end || 0,
+        currentPeriodEnd: getSubscriptionPeriodEnd(subscription) || 0,
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
         cancelAt: subscription.cancel_at ?? undefined,
         quantity: subscription.items.data[0]?.quantity ?? 1,
@@ -725,10 +763,30 @@ export async function processEvent(
       const item = subscription.items.data[0];
       await ctx.runMutation(component.private.handleSubscriptionDeleted, {
         stripeSubscriptionId: subscription.id,
+        stripeCustomerId: getStripeObjectId(subscription.customer),
+        priceId: item?.price?.id || undefined,
+        quantity: item?.quantity ?? undefined,
+        metadata: subscription.metadata || {},
         cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
-        currentPeriodEnd: item?.current_period_end ?? undefined,
+        currentPeriodEnd: getSubscriptionPeriodEnd(subscription),
         cancelAt: subscription.cancel_at ?? undefined,
         eventCreated: event.created,
+      });
+      break;
+    }
+
+    // A delayed payment method, such as a bank debit, completes the session
+    // while it is still unpaid. One of these two events follows when the
+    // payment settles.
+    case "checkout.session.async_payment_succeeded":
+    case "checkout.session.async_payment_failed": {
+      const session = event.data.object as StripeSDK.Checkout.Session;
+      await ctx.runMutation(component.private.handleCheckoutSessionCompleted, {
+        stripeCheckoutSessionId: session.id,
+        stripeCustomerId: getStripeObjectId(session.customer),
+        mode: session.mode || "payment",
+        paymentStatus: session.payment_status || undefined,
+        metadata: session.metadata || undefined,
       });
       break;
     }
@@ -740,6 +798,7 @@ export async function processEvent(
         stripeCheckoutSessionId: session.id,
         stripeCustomerId,
         mode: session.mode || "payment",
+        paymentStatus: session.payment_status || undefined,
         metadata: session.metadata || undefined,
       });
 
@@ -831,6 +890,31 @@ export async function processEvent(
       break;
     }
 
+    // `charge.refunded` only reports refunds being made. When one fails or is
+    // canceled, the charge's refunded total drops, so read it from Stripe.
+    case "refund.failed":
+    case "refund.updated":
+    case "charge.refund.updated": {
+      const refund = event.data.object as StripeSDK.Refund;
+      const stripeChargeId = getStripeObjectId(refund.charge);
+      if (
+        !stripeChargeId ||
+        (refund.status !== "failed" && refund.status !== "canceled")
+      ) {
+        break;
+      }
+      const charge = await stripe.charges.retrieve(stripeChargeId);
+      const stripePaymentIntentId = getStripeObjectId(charge.payment_intent);
+      if (!stripePaymentIntentId) break;
+      await ctx.runMutation(component.private.handleChargeRefunded, {
+        stripePaymentIntentId,
+        amountRefunded: charge.amount_refunded,
+        refunded: charge.refunded,
+        authoritative: true,
+      });
+      break;
+    }
+
     default:
       console.log(`ℹ️ Unhandled event type: ${event.type}`);
   }
@@ -891,6 +975,22 @@ async function getPaymentIntentSubscriptionId(
       ? await stripe.invoices.retrieve(invoice)
       : invoice;
   return getInvoiceSubscriptionId(resolvedInvoice);
+}
+
+/**
+ * API versions from 2025-03-31.basil onward report the billing period on each
+ * subscription item. Earlier ones, which a webhook endpoint can still be
+ * pinned to, report it on the subscription.
+ */
+function getSubscriptionPeriodEnd(subscription: StripeSDK.Subscription) {
+  const legacySubscription = subscription as StripeSDK.Subscription & {
+    current_period_end?: number | null;
+  };
+  return (
+    subscription.items.data[0]?.current_period_end ??
+    legacySubscription.current_period_end ??
+    undefined
+  );
 }
 
 function getInvoiceSubscriptionId(invoice: StripeSDK.Invoice) {

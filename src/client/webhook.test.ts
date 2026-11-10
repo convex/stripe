@@ -61,15 +61,24 @@ async function signedRequest(
   });
 }
 
-function webhookCtx(options: { alreadyProcessed?: boolean } = {}) {
+function webhookCtx(
+  options: { claim?: "claimed" | "processed" | "in_progress" } = {},
+) {
   const steps: string[] = [];
+  let claimed = false;
   const ctx = {
-    runQuery: vi.fn(async () => {
-      steps.push("check ledger");
-      return options.alreadyProcessed ?? false;
-    }),
+    runQuery: vi.fn(),
     runMutation: vi.fn(async (_ref: unknown, args: object) => {
-      steps.push("stripeEventId" in args ? "record event" : "sync customer");
+      if (!("stripeEventId" in args)) {
+        steps.push("sync customer");
+        return null;
+      }
+      if (!claimed) {
+        claimed = true;
+        steps.push("claim event");
+        return options.claim ?? "claimed";
+      }
+      steps.push("type" in args ? "record event" : "release event");
       return null;
     }),
   };
@@ -108,18 +117,18 @@ describe("webhook route", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ received: true });
     expect(steps).toEqual([
-      "check ledger",
+      "claim event",
       "sync customer",
       "onEvent",
       "customer.created handler",
       "record event",
     ]);
-    expect(ctx.runMutation.mock.calls[0][1]).toMatchObject({
+    expect(ctx.runMutation.mock.calls[1][1]).toMatchObject({
       stripeCustomerId: "cus_webhook",
       email: "webhook@example.com",
       eventCreated: 1_800_000_000,
     });
-    expect(ctx.runMutation.mock.calls[1][1]).toEqual({
+    expect(ctx.runMutation.mock.calls[2][1]).toEqual({
       stripeEventId: "evt_customer_created",
       type: "customer.created",
       created: 1_800_000_000,
@@ -128,7 +137,7 @@ describe("webhook route", () => {
 
   test("acknowledges an already processed event without running anything, and logs the skip", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const { ctx, steps } = webhookCtx({ alreadyProcessed: true });
+    const { ctx, steps } = webhookCtx({ claim: "processed" });
     const onEvent = vi.fn();
     const { handler } = getWebhookRoute({ onEvent });
 
@@ -138,7 +147,7 @@ describe("webhook route", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(steps).toEqual(["check ledger"]);
+    expect(steps).toEqual(["claim event"]);
     expect(onEvent).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(
       "⏭️ Skipping webhook event evt_customer_created (customer.created) - already processed",
@@ -146,7 +155,7 @@ describe("webhook route", () => {
   });
 
   test("with deduplicateEvents off, handles an already processed event again and records nothing", async () => {
-    const { ctx, steps } = webhookCtx({ alreadyProcessed: true });
+    const { ctx, steps } = webhookCtx({ claim: "processed" });
     const { handler } = getWebhookRoute({
       deduplicateEvents: false,
       onEvent: async () => {
@@ -161,10 +170,28 @@ describe("webhook route", () => {
 
     expect(response.status).toBe(200);
     expect(steps).toEqual(["sync customer", "onEvent"]);
-    expect(ctx.runQuery).not.toHaveBeenCalled();
   });
 
-  test("does not record the event when a handler fails, so Stripe retries", async () => {
+  test("answers 409 without running anything while another delivery of the event is in progress", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { ctx, steps } = webhookCtx({ claim: "in_progress" });
+    const onEvent = vi.fn();
+    const { handler } = getWebhookRoute({ onEvent });
+
+    const response = await handler(
+      ctx,
+      await signedRequest(customerCreatedEvent),
+    );
+
+    expect(response.status).toBe(409);
+    expect(steps).toEqual(["claim event"]);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "⏳ Webhook event evt_customer_created (customer.created) is already being processed",
+    );
+  });
+
+  test("releases the event when a handler fails, so Stripe's retry runs it again", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { ctx, steps } = webhookCtx();
     const { handler } = getWebhookRoute({
@@ -181,7 +208,10 @@ describe("webhook route", () => {
     );
 
     expect(response.status).toBe(500);
-    expect(steps).toEqual(["check ledger", "sync customer"]);
+    expect(steps).toEqual(["claim event", "sync customer", "release event"]);
+    expect(ctx.runMutation.mock.calls[2][1]).toEqual({
+      stripeEventId: "evt_customer_created",
+    });
   });
 
   test("rejects a request signed with a different secret", async () => {
@@ -195,7 +225,6 @@ describe("webhook route", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(ctx.runQuery).not.toHaveBeenCalled();
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 

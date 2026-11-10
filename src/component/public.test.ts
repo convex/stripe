@@ -1370,3 +1370,321 @@ test("linking a subscription to an org keeps the metadata mirrored from Stripe",
     metadata: { plan: "pro" },
   });
 });
+
+test("a subscription deleted before it was synced is stored as canceled", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleSubscriptionDeleted, {
+    stripeSubscriptionId: "sub_gone",
+    stripeCustomerId: "cus_gone",
+    priceId: "price_gone",
+    quantity: 2,
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    metadata: { userId: "user_gone", orgId: "org_gone" },
+    eventCreated: 2000,
+  });
+
+  expect(
+    await t.query(api.public.getSubscription, {
+      stripeSubscriptionId: "sub_gone",
+    }),
+  ).toEqual({
+    stripeSubscriptionId: "sub_gone",
+    stripeCustomerId: "cus_gone",
+    status: "canceled",
+    currentPeriodEnd: 1_800_000_000,
+    cancelAtPeriodEnd: false,
+    quantity: 2,
+    priceId: "price_gone",
+    metadata: { userId: "user_gone", orgId: "org_gone" },
+    userId: "user_gone",
+    orgId: "org_gone",
+  });
+});
+
+test.each([
+  ["customer.subscription.created", api.private.handleSubscriptionCreated],
+  ["customer.subscription.updated", api.private.handleSubscriptionUpdated],
+])(
+  "a late %s cannot revive a subscription deleted before it was synced",
+  async (_event, lateHandler) => {
+    const t = convexTest(schema, modules);
+
+    await t.mutation(api.private.handleSubscriptionDeleted, {
+      stripeSubscriptionId: "sub_late",
+      stripeCustomerId: "cus_late",
+      priceId: "price_late",
+      eventCreated: 2000,
+    });
+    await t.mutation(lateHandler, {
+      stripeSubscriptionId: "sub_late",
+      stripeCustomerId: "cus_late",
+      status: "active",
+      currentPeriodEnd: 1_900_000_000,
+      cancelAtPeriodEnd: false,
+      priceId: "price_late",
+      metadata: { userId: "user_late" },
+      eventCreated: 1000,
+    });
+
+    const subscription = await t.query(api.public.getSubscription, {
+      stripeSubscriptionId: "sub_late",
+    });
+    expect(subscription?.status).toBe("canceled");
+  },
+);
+
+test("a deletion without a customer ID stores nothing for an unknown subscription", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleSubscriptionDeleted, {
+    stripeSubscriptionId: "sub_unknown",
+  });
+
+  expect(
+    await t.query(api.public.getSubscription, {
+      stripeSubscriptionId: "sub_unknown",
+    }),
+  ).toBeNull();
+});
+
+async function checkoutAfter(paymentStatuses: Array<string | undefined>) {
+  const t = convexTest(schema, modules);
+  for (const paymentStatus of paymentStatuses) {
+    await t.mutation(api.private.handleCheckoutSessionCompleted, {
+      stripeCheckoutSessionId: "cs_async",
+      stripeCustomerId: "cus_async",
+      mode: "payment",
+      paymentStatus,
+    });
+  }
+  return await t.query(api.public.getCheckoutSession, {
+    stripeCheckoutSessionId: "cs_async",
+  });
+}
+
+test("a checkout that completes before its payment clears is stored as unpaid", async () => {
+  expect(await checkoutAfter(["unpaid"])).toMatchObject({
+    status: "complete",
+    paymentStatus: "unpaid",
+  });
+});
+
+test("a checkout becomes paid when its delayed payment succeeds", async () => {
+  expect(await checkoutAfter(["unpaid", "paid"])).toMatchObject({
+    paymentStatus: "paid",
+  });
+});
+
+test("a late unpaid checkout event does not undo a paid one", async () => {
+  expect(await checkoutAfter(["paid", "unpaid"])).toMatchObject({
+    paymentStatus: "paid",
+  });
+});
+
+test("a checkout event without a payment status keeps the stored one", async () => {
+  expect(await checkoutAfter(["paid", undefined])).toMatchObject({
+    paymentStatus: "paid",
+  });
+});
+
+test("a webhook event can only be claimed by one delivery at a time", async () => {
+  const t = convexTest(schema, modules);
+  const event = {
+    stripeEventId: "evt_claim",
+    type: "invoice.paid",
+    created: 1_800_000_000,
+  };
+
+  expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+    "claimed",
+  );
+  expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+    "in_progress",
+  );
+  expect(
+    await t.query(api.private.isWebhookEventProcessed, {
+      stripeEventId: "evt_claim",
+    }),
+  ).toBe(false);
+
+  await t.mutation(api.private.markWebhookEventProcessed, event);
+
+  expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+    "processed",
+  );
+  expect(
+    await t.query(api.private.isWebhookEventProcessed, {
+      stripeEventId: "evt_claim",
+    }),
+  ).toBe(true);
+  expect(
+    await t.run((ctx) => ctx.db.query("webhook_events").collect()),
+  ).toHaveLength(1);
+});
+
+test("a released webhook event can be claimed again", async () => {
+  const t = convexTest(schema, modules);
+  const event = {
+    stripeEventId: "evt_release",
+    type: "invoice.paid",
+    created: 1_800_000_000,
+  };
+
+  await t.mutation(api.private.claimWebhookEvent, event);
+  await t.mutation(api.private.releaseWebhookEvent, {
+    stripeEventId: "evt_release",
+  });
+
+  expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+    "claimed",
+  );
+});
+
+test("releasing does not remove an event that finished processing", async () => {
+  const t = convexTest(schema, modules);
+  const event = {
+    stripeEventId: "evt_done",
+    type: "invoice.paid",
+    created: 1_800_000_000,
+  };
+
+  await t.mutation(api.private.markWebhookEventProcessed, event);
+  await t.mutation(api.private.releaseWebhookEvent, {
+    stripeEventId: "evt_done",
+  });
+
+  expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+    "processed",
+  );
+});
+
+test("a claim left behind by a crashed delivery expires", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const t = convexTest(schema, modules);
+    const event = {
+      stripeEventId: "evt_crashed",
+      type: "invoice.paid",
+      created: 1_800_000_000,
+    };
+    const start = Date.UTC(2026, 10, 10);
+
+    vi.setSystemTime(start);
+    await t.mutation(api.private.claimWebhookEvent, event);
+
+    vi.setSystemTime(start + 14 * 60 * 1000);
+    expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+      "in_progress",
+    );
+
+    vi.setSystemTime(start + 16 * 60 * 1000);
+    expect(await t.mutation(api.private.claimWebhookEvent, event)).toBe(
+      "claimed",
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a failed refund lowers the refunded total", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(api.private.handlePaymentIntentSucceeded, {
+    stripePaymentIntentId: "pi_refund_failed",
+    amount: 4900,
+    currency: "usd",
+    status: "succeeded",
+    created: 1_800_000_000,
+  });
+  await t.mutation(api.private.handleChargeRefunded, {
+    stripePaymentIntentId: "pi_refund_failed",
+    amountRefunded: 4900,
+    refunded: true,
+  });
+
+  await t.mutation(api.private.handleChargeRefunded, {
+    stripePaymentIntentId: "pi_refund_failed",
+    amountRefunded: 0,
+    refunded: false,
+    authoritative: true,
+  });
+
+  expect(
+    await t.query(api.public.getPayment, {
+      stripePaymentIntentId: "pi_refund_failed",
+    }),
+  ).toMatchObject({ amountRefunded: 0, refunded: false });
+});
+
+test("list queries with a limit return the newest rows first", async () => {
+  const t = convexTest(schema, modules);
+  for (const id of ["in_1", "in_2", "in_3"]) {
+    await t.mutation(api.private.handleInvoiceCreated, {
+      stripeInvoiceId: id,
+      stripeCustomerId: "cus_limit",
+      status: "paid",
+      amountDue: 100,
+      amountPaid: 100,
+      created: 1_800_000_000,
+      metadata: { userId: "user_limit", orgId: "org_limit" },
+    });
+  }
+  const ids = (invoices: Array<{ stripeInvoiceId: string }>) =>
+    invoices.map((invoice) => invoice.stripeInvoiceId);
+
+  expect(
+    ids(
+      await t.query(api.public.listInvoices, { stripeCustomerId: "cus_limit" }),
+    ),
+  ).toEqual(["in_1", "in_2", "in_3"]);
+  expect(
+    ids(
+      await t.query(api.public.listInvoices, {
+        stripeCustomerId: "cus_limit",
+        limit: 2,
+      }),
+    ),
+  ).toEqual(["in_3", "in_2"]);
+  expect(
+    ids(
+      await t.query(api.public.listInvoicesByUserId, {
+        userId: "user_limit",
+        limit: 1,
+      }),
+    ),
+  ).toEqual(["in_3"]);
+  expect(
+    ids(
+      await t.query(api.public.listInvoicesByOrgId, {
+        orgId: "org_limit",
+        limit: 5,
+      }),
+    ),
+  ).toEqual(["in_3", "in_2", "in_1"]);
+});
+
+test("getCustomerByEmail can skip customers that already belong to a user", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(api.public.createOrUpdateCustomer, {
+    stripeCustomerId: "cus_older_unclaimed",
+    email: "shared@example.com",
+  });
+  await t.mutation(api.public.createOrUpdateCustomer, {
+    stripeCustomerId: "cus_newer_claimed",
+    email: "shared@example.com",
+    metadata: { userId: "user_owner" },
+  });
+
+  expect(
+    await t.query(api.public.getCustomerByEmail, {
+      email: "shared@example.com",
+    }),
+  ).toMatchObject({ stripeCustomerId: "cus_newer_claimed" });
+  expect(
+    await t.query(api.public.getCustomerByEmail, {
+      email: "shared@example.com",
+      unclaimed: true,
+    }),
+  ).toMatchObject({ stripeCustomerId: "cus_older_unclaimed" });
+});

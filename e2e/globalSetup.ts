@@ -18,6 +18,9 @@ const LOCAL_WEBHOOK_SECRET = "whsec_e2e_local_signing_secret";
 // `listen` is told which events to forward; earlier versions forwarded all.
 const FORWARDED_EVENTS = [
   "charge.refunded",
+  "charge.refund.updated",
+  "checkout.session.async_payment_failed",
+  "checkout.session.async_payment_succeeded",
   "checkout.session.completed",
   "customer.created",
   "customer.updated",
@@ -32,6 +35,8 @@ const FORWARDED_EVENTS = [
   "invoice.payment_succeeded",
   "invoice.payment_failed",
   "payment_intent.succeeded",
+  "refund.failed",
+  "refund.updated",
 ];
 
 /**

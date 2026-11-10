@@ -8,6 +8,9 @@ import { internalMutation, mutation, query } from "./_generated/server.js";
 
 const WEBHOOK_EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const WEBHOOK_EVENT_PRUNE_BATCH = 500;
+// Convex stops an HTTP action after 10 minutes, so a claim older than this
+// belongs to a delivery that died without releasing it.
+const WEBHOOK_EVENT_CLAIM_MS = 15 * 60 * 1000;
 
 export const isWebhookEventProcessed = query({
   args: { stripeEventId: v.string() },
@@ -19,7 +22,66 @@ export const isWebhookEventProcessed = query({
         q.eq("stripeEventId", args.stripeEventId),
       )
       .unique();
-    return event !== null;
+    return event !== null && !event.processing;
+  },
+});
+
+/**
+ * Reserve an event for one delivery. Stripe can deliver the same event twice
+ * at once, and checking the ledger and recording the event in separate steps
+ * would let both deliveries run the app's handlers.
+ */
+export const claimWebhookEvent = mutation({
+  args: {
+    stripeEventId: v.string(),
+    type: v.string(),
+    created: v.number(),
+  },
+  returns: v.union(
+    v.literal("claimed"),
+    v.literal("processed"),
+    v.literal("in_progress"),
+  ),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhook_events")
+      .withIndex("by_stripe_event_id", (q) =>
+        q.eq("stripeEventId", args.stripeEventId),
+      )
+      .unique();
+    const now = Date.now();
+    if (!existing) {
+      await ctx.db.insert("webhook_events", {
+        ...args,
+        processedAt: now,
+        processing: true,
+      });
+      return "claimed" as const;
+    }
+    if (!existing.processing) return "processed" as const;
+    if (now - existing.processedAt < WEBHOOK_EVENT_CLAIM_MS) {
+      return "in_progress" as const;
+    }
+    await ctx.db.patch("webhook_events", existing._id, { processedAt: now });
+    return "claimed" as const;
+  },
+});
+
+/** Give up a claim after a failure, so Stripe's retry can process the event. */
+export const releaseWebhookEvent = mutation({
+  args: { stripeEventId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhook_events")
+      .withIndex("by_stripe_event_id", (q) =>
+        q.eq("stripeEventId", args.stripeEventId),
+      )
+      .unique();
+    if (existing?.processing) {
+      await ctx.db.delete("webhook_events", existing._id);
+    }
+    return null;
   },
 });
 
@@ -40,6 +102,11 @@ export const markWebhookEventProcessed = mutation({
     if (!existing) {
       await ctx.db.insert("webhook_events", {
         ...args,
+        processedAt: Date.now(),
+      });
+    } else if (existing.processing) {
+      await ctx.db.patch("webhook_events", existing._id, {
+        processing: undefined,
         processedAt: Date.now(),
       });
     }
@@ -421,6 +488,10 @@ export const handleSubscriptionUpdated = mutation({
 export const handleSubscriptionDeleted = mutation({
   args: {
     stripeSubscriptionId: v.string(),
+    stripeCustomerId: v.optional(v.string()),
+    priceId: v.optional(v.string()),
+    quantity: v.optional(v.number()),
+    metadata: v.optional(v.any()),
     cancelAtPeriodEnd: v.optional(v.boolean()),
     currentPeriodEnd: v.optional(v.number()),
     cancelAt: v.optional(v.number()),
@@ -450,6 +521,25 @@ export const handleSubscriptionDeleted = mutation({
           args.eventCreated,
         ),
       });
+    } else if (args.stripeCustomerId) {
+      // The subscription was never synced, and its `created` or `updated`
+      // events can still arrive, for example on a retry. Store it as canceled
+      // so they can't insert it as active.
+      const metadata = args.metadata || {};
+      await ctx.db.insert("subscriptions", {
+        stripeSubscriptionId: args.stripeSubscriptionId,
+        stripeCustomerId: args.stripeCustomerId,
+        status: "canceled",
+        currentPeriodEnd: args.currentPeriodEnd ?? 0,
+        cancelAtPeriodEnd: args.cancelAtPeriodEnd ?? false,
+        cancelAt: args.cancelAt,
+        quantity: args.quantity,
+        priceId: args.priceId ?? "",
+        metadata,
+        orgId: metadata.orgId as string | undefined,
+        userId: metadata.userId as string | undefined,
+        lastEventCreated: args.eventCreated,
+      });
     }
 
     return null;
@@ -461,6 +551,7 @@ export const handleCheckoutSessionCompleted = mutation({
     stripeCheckoutSessionId: v.string(),
     stripeCustomerId: v.optional(v.string()),
     mode: v.string(),
+    paymentStatus: v.optional(v.string()),
     metadata: v.optional(v.any()),
   },
   returns: v.null(),
@@ -473,9 +564,18 @@ export const handleCheckoutSessionCompleted = mutation({
       .unique();
 
     if (existing) {
+      // `checkout.session.completed` says "unpaid" for a delayed payment and
+      // can arrive after the event that settles it.
+      const paymentStatus =
+        args.paymentStatus === "unpaid" &&
+        existing.paymentStatus !== undefined &&
+        existing.paymentStatus !== "unpaid"
+          ? existing.paymentStatus
+          : args.paymentStatus;
       await ctx.db.patch("checkout_sessions", existing._id, {
         status: "complete",
         stripeCustomerId: args.stripeCustomerId,
+        ...(paymentStatus !== undefined && { paymentStatus }),
       });
     } else {
       await ctx.db.insert("checkout_sessions", {
@@ -483,6 +583,7 @@ export const handleCheckoutSessionCompleted = mutation({
         stripeCustomerId: args.stripeCustomerId,
         status: "complete",
         mode: args.mode,
+        paymentStatus: args.paymentStatus,
         metadata: args.metadata || {},
       });
     }
@@ -672,6 +773,8 @@ export const handleChargeRefunded = mutation({
     stripePaymentIntentId: v.string(),
     amountRefunded: v.number(),
     refunded: v.boolean(),
+    // Set when the totals were just read from Stripe instead of an event.
+    authoritative: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -687,14 +790,17 @@ export const handleChargeRefunded = mutation({
     if (!payment) return null;
 
     // Each event carries the running total, so the largest one is the newest
-    // even when two partial refunds arrive out of order.
-    const patch = {
-      amountRefunded: Math.max(
-        payment.amountRefunded ?? 0,
-        args.amountRefunded,
-      ),
-      refunded: (payment.refunded ?? false) || args.refunded,
-    };
+    // even when two partial refunds arrive out of order. The total only drops
+    // when a refund fails, and then the caller reads it from Stripe.
+    const patch = args.authoritative
+      ? { amountRefunded: args.amountRefunded, refunded: args.refunded }
+      : {
+          amountRefunded: Math.max(
+            payment.amountRefunded ?? 0,
+            args.amountRefunded,
+          ),
+          refunded: (payment.refunded ?? false) || args.refunded,
+        };
     if (patchChangesDocument(payment, patch)) {
       await ctx.db.patch("payments", payment._id, patch);
     }

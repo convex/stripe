@@ -26,6 +26,25 @@ function withoutInternalFields<
   return data;
 }
 
+/**
+ * The list queries return every match, oldest first, which can exceed Convex's
+ * read limits for a customer with a long history. With `limit` they return
+ * the newest `limit` matches instead, newest first.
+ */
+const limitArg = { limit: v.optional(v.number()) };
+
+async function newestOrAll<T>(
+  query: {
+    collect(): Promise<T[]>;
+    order(order: "desc"): { take(n: number): Promise<T[]> };
+  },
+  limit: number | undefined,
+) {
+  return limit === undefined
+    ? await query.collect()
+    : await query.order("desc").take(limit);
+}
+
 // ============================================================================
 // PUBLIC QUERIES
 // ============================================================================
@@ -49,10 +68,11 @@ export const getCustomer = query({
 
 /**
  * Get the most recently created customer with this email address.
- * Customers deleted in Stripe are skipped.
+ * Customers deleted in Stripe are skipped. With `unclaimed`, so are customers
+ * that already have a `userId`.
  */
 export const getCustomerByEmail = query({
-  args: { email: v.string() },
+  args: { email: v.string(), unclaimed: v.optional(v.boolean()) },
   returns: v.union(customerValidator, v.null()),
   handler: async (ctx, args) => {
     const customers = ctx.db
@@ -60,7 +80,9 @@ export const getCustomerByEmail = query({
       .withIndex("by_email", (q) => q.eq("email", args.email))
       .order("desc");
     for await (const customer of customers) {
-      if (!customer.deleted) return withoutInternalFields(customer);
+      if (customer.deleted) continue;
+      if (args.unclaimed && customer.userId) continue;
+      return withoutInternalFields(customer);
     }
     return null;
   },
@@ -106,15 +128,17 @@ export const getSubscription = query({
  * List all subscriptions for a customer.
  */
 export const listSubscriptions = query({
-  args: { stripeCustomerId: v.string() },
+  args: { stripeCustomerId: v.string(), ...limitArg },
   returns: v.array(subscriptionValidator),
   handler: async (ctx, args) => {
-    const subscriptions = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_stripe_customer_id", (q) =>
-        q.eq("stripeCustomerId", args.stripeCustomerId),
-      )
-      .collect();
+    const subscriptions = await newestOrAll(
+      ctx.db
+        .query("subscriptions")
+        .withIndex("by_stripe_customer_id", (q) =>
+          q.eq("stripeCustomerId", args.stripeCustomerId),
+        ),
+      args.limit,
+    );
     return subscriptions.map(withoutInternalFields);
   },
 });
@@ -164,13 +188,15 @@ export const getSubscriptionByOrgId = query({
  * List all subscriptions for an organization ID.
  */
 export const listSubscriptionsByOrgId = query({
-  args: { orgId: v.string() },
+  args: { orgId: v.string(), ...limitArg },
   returns: v.array(subscriptionValidator),
   handler: async (ctx, args) => {
-    const subscriptions = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
-      .collect();
+    const subscriptions = await newestOrAll(
+      ctx.db
+        .query("subscriptions")
+        .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId)),
+      args.limit,
+    );
     return subscriptions.map(withoutInternalFields);
   },
 });
@@ -180,13 +206,15 @@ export const listSubscriptionsByOrgId = query({
  * Useful for looking up subscriptions by custom userId.
  */
 export const listSubscriptionsByUserId = query({
-  args: { userId: v.string() },
+  args: { userId: v.string(), ...limitArg },
   returns: v.array(subscriptionValidator),
   handler: async (ctx, args) => {
-    const subscriptions = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
-      .collect();
+    const subscriptions = await newestOrAll(
+      ctx.db
+        .query("subscriptions")
+        .withIndex("by_user_id", (q) => q.eq("userId", args.userId)),
+      args.limit,
+    );
     return subscriptions.map(withoutInternalFields);
   },
 });
@@ -214,15 +242,17 @@ export const getPayment = query({
  * List payments for a customer.
  */
 export const listPayments = query({
-  args: { stripeCustomerId: v.string() },
+  args: { stripeCustomerId: v.string(), ...limitArg },
   returns: v.array(paymentValidator),
   handler: async (ctx, args) => {
-    const payments = await ctx.db
-      .query("payments")
-      .withIndex("by_stripe_customer_id", (q) =>
-        q.eq("stripeCustomerId", args.stripeCustomerId),
-      )
-      .collect();
+    const payments = await newestOrAll(
+      ctx.db
+        .query("payments")
+        .withIndex("by_stripe_customer_id", (q) =>
+          q.eq("stripeCustomerId", args.stripeCustomerId),
+        ),
+      args.limit,
+    );
     return payments.map(({ _id, _creationTime, ...data }) => data);
   },
 });
@@ -231,13 +261,15 @@ export const listPayments = query({
  * List payments for a user ID.
  */
 export const listPaymentsByUserId = query({
-  args: { userId: v.string() },
+  args: { userId: v.string(), ...limitArg },
   returns: v.array(paymentValidator),
   handler: async (ctx, args) => {
-    const payments = await ctx.db
-      .query("payments")
-      .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
-      .collect();
+    const payments = await newestOrAll(
+      ctx.db
+        .query("payments")
+        .withIndex("by_user_id", (q) => q.eq("userId", args.userId)),
+      args.limit,
+    );
     return payments.map(({ _id, _creationTime, ...data }) => data);
   },
 });
@@ -246,13 +278,15 @@ export const listPaymentsByUserId = query({
  * List payments for an organization ID.
  */
 export const listPaymentsByOrgId = query({
-  args: { orgId: v.string() },
+  args: { orgId: v.string(), ...limitArg },
   returns: v.array(paymentValidator),
   handler: async (ctx, args) => {
-    const payments = await ctx.db
-      .query("payments")
-      .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
-      .collect();
+    const payments = await newestOrAll(
+      ctx.db
+        .query("payments")
+        .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId)),
+      args.limit,
+    );
     return payments.map(({ _id, _creationTime, ...data }) => data);
   },
 });
@@ -261,15 +295,17 @@ export const listPaymentsByOrgId = query({
  * List invoices for a customer.
  */
 export const listInvoices = query({
-  args: { stripeCustomerId: v.string() },
+  args: { stripeCustomerId: v.string(), ...limitArg },
   returns: v.array(invoiceValidator),
   handler: async (ctx, args) => {
-    const invoices = await ctx.db
-      .query("invoices")
-      .withIndex("by_stripe_customer_id", (q) =>
-        q.eq("stripeCustomerId", args.stripeCustomerId),
-      )
-      .collect();
+    const invoices = await newestOrAll(
+      ctx.db
+        .query("invoices")
+        .withIndex("by_stripe_customer_id", (q) =>
+          q.eq("stripeCustomerId", args.stripeCustomerId),
+        ),
+      args.limit,
+    );
     return invoices.map(({ _id, _creationTime, ...data }) => data);
   },
 });
@@ -278,13 +314,15 @@ export const listInvoices = query({
  * List invoices for an organization ID.
  */
 export const listInvoicesByOrgId = query({
-  args: { orgId: v.string() },
+  args: { orgId: v.string(), ...limitArg },
   returns: v.array(invoiceValidator),
   handler: async (ctx, args) => {
-    const invoices = await ctx.db
-      .query("invoices")
-      .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId))
-      .collect();
+    const invoices = await newestOrAll(
+      ctx.db
+        .query("invoices")
+        .withIndex("by_org_id", (q) => q.eq("orgId", args.orgId)),
+      args.limit,
+    );
     return invoices.map(({ _id, _creationTime, ...data }) => data);
   },
 });
@@ -293,13 +331,15 @@ export const listInvoicesByOrgId = query({
  * List invoices for a user ID.
  */
 export const listInvoicesByUserId = query({
-  args: { userId: v.string() },
+  args: { userId: v.string(), ...limitArg },
   returns: v.array(invoiceValidator),
   handler: async (ctx, args) => {
-    const invoices = await ctx.db
-      .query("invoices")
-      .withIndex("by_user_id", (q) => q.eq("userId", args.userId))
-      .collect();
+    const invoices = await newestOrAll(
+      ctx.db
+        .query("invoices")
+        .withIndex("by_user_id", (q) => q.eq("userId", args.userId)),
+      args.limit,
+    );
     return invoices.map(({ _id, _creationTime, ...data }) => data);
   },
 });
@@ -327,15 +367,17 @@ export const getCheckoutSession = query({
  * List checkout sessions for a customer.
  */
 export const listCheckoutSessions = query({
-  args: { stripeCustomerId: v.string() },
+  args: { stripeCustomerId: v.string(), ...limitArg },
   returns: v.array(checkoutSessionValidator),
   handler: async (ctx, args) => {
-    const sessions = await ctx.db
-      .query("checkout_sessions")
-      .withIndex("by_stripe_customer_id", (q) =>
-        q.eq("stripeCustomerId", args.stripeCustomerId),
-      )
-      .collect();
+    const sessions = await newestOrAll(
+      ctx.db
+        .query("checkout_sessions")
+        .withIndex("by_stripe_customer_id", (q) =>
+          q.eq("stripeCustomerId", args.stripeCustomerId),
+        ),
+      args.limit,
+    );
     return sessions.map(({ _id, _creationTime, ...data }) => data);
   },
 });

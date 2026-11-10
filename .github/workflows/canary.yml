@@ -19,9 +19,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
       STRIPE_E2E_LATEST_API_VERSION: "true"
     steps:
+      # Only this step and the end-to-end step see the key, so the install
+      # scripts of the unvetted releases below can't read it.
+      - name: Check for a Stripe key
+        id: stripe-key
+        env:
+          STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
+        run: |
+          if [ -n "$STRIPE_E2E_SECRET_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -40,10 +49,12 @@ jobs:
           npm test
           npm run typecheck
       - uses: ./.github/actions/setup-stripe-cli
-        if: env.STRIPE_E2E_SECRET_KEY != ''
+        if: steps.stripe-key.outputs.present == 'true'
       - name:
           End-to-end, with real Stripe webhooks on the latest API version when a
           key is set
+        env:
+          STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
         run: npm run test:e2e
 
   report:

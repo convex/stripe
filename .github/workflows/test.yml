@@ -25,13 +25,13 @@ jobs:
       - name: Node setup
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          cache-dependency-path: package.json
+          cache-dependency-path: package-lock.json
           node-version: "20.x"
           cache: "npm"
 
       - name: Install and build
         run: |
-          npm i
+          npm ci
           npm run build
       - name: Publish package for testing branch
         run: npx pkg-pr-new publish || echo "pkg-pr-new failed"
@@ -137,30 +137,38 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
     steps:
-      - name: Skip without a Stripe key
-        if: env.STRIPE_E2E_SECRET_KEY == ''
-        run:
-          echo "::notice::STRIPE_E2E_SECRET_KEY is not set, so the Stripe
-          test-mode suite was skipped."
+      # Only this step and the test step see the key, so package install
+      # scripts can't read it.
+      - name: Check for a Stripe key
+        id: stripe-key
+        env:
+          STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
+        run: |
+          if [ -n "$STRIPE_E2E_SECRET_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::STRIPE_E2E_SECRET_KEY is not set, so the Stripe test-mode suite was skipped."
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.STRIPE_E2E_SECRET_KEY != ''
+        if: steps.stripe-key.outputs.present == 'true'
         with:
           persist-credentials: false
       - name: Node setup
-        if: env.STRIPE_E2E_SECRET_KEY != ''
+        if: steps.stripe-key.outputs.present == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           cache-dependency-path: package-lock.json
           node-version: "20.x"
           cache: "npm"
       - uses: ./.github/actions/setup-stripe-cli
-        if: env.STRIPE_E2E_SECRET_KEY != ''
+        if: steps.stripe-key.outputs.present == 'true'
+      - name: Install dependencies
+        if: steps.stripe-key.outputs.present == 'true'
+        run: npm ci
       - name:
           Run real Stripe objects and webhooks through a local Convex backend
-        if: env.STRIPE_E2E_SECRET_KEY != ''
-        run: |
-          npm ci
-          npm run test:e2e -- e2e/stripe.test.ts
+        if: steps.stripe-key.outputs.present == 'true'
+        env:
+          STRIPE_E2E_SECRET_KEY: ${{ secrets.STRIPE_E2E_SECRET_KEY }}
+        run: npm run test:e2e -- e2e/stripe.test.ts
