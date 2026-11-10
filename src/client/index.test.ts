@@ -354,7 +354,11 @@ describe("StripeSubscriptions client", () => {
     });
 
     expect(result).toEqual({ customerId: "cus_fresh", isNew: true });
-    expect(ctx.runQuery).toHaveBeenCalledTimes(3);
+    // Three lookups by user, then the check on the created customer. None
+    // by email.
+    expect(
+      ctx.runQuery.mock.calls.map(([, args]) => Object.keys(args)),
+    ).toEqual([["userId"], ["userId"], ["userId"], ["stripeCustomerId"]]);
     expect(stripeMocks.updateCustomer).not.toHaveBeenCalled();
   });
 
