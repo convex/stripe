@@ -225,6 +225,22 @@ argument. For non-hosted Checkout UI modes, the component omits `successUrl` and
 `cancelUrl` from the Stripe request and expects redirect behavior to be supplied
 through Stripe-supported params such as `return_url`.
 
+### getOrCreateCustomer
+
+```typescript
+const { customerId, isNew } = await stripeClient.getOrCreateCustomer(ctx, {
+  userId: identity.subject,
+  email: identity.email, // Optional
+  name: identity.name, // Optional
+});
+```
+
+Returns the customer linked to `userId`, or the customer on the user's
+subscriptions or payments. If there is none, it reuses a customer with the same
+email only when that customer isn't linked to any user yet, and links it to
+this user. Otherwise it creates a new customer with `metadata.userId` set.
+Customers deleted in Stripe are never returned.
+
 ### Component Queries
 
 Access data directly via the component's public queries:

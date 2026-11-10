@@ -25,6 +25,9 @@ type StripeClientConfigWithApiVersion = Omit<
 
 export type StripeComponent = ComponentApi;
 
+// Each customer deleted within 24 hours of its creation costs one attempt.
+const MAX_CREATE_CUSTOMER_ATTEMPTS = 5;
+
 export type {
   RegisterRoutesConfig,
   StripeEventHandlers,
@@ -325,7 +328,11 @@ export class StripeSubscriptions {
 
   /**
    * Get or create a Stripe customer for a user.
-   * Checks existing customers, subscriptions, and payments to avoid duplicates.
+   *
+   * Looks for a customer linked to `userId`, then for one linked through the
+   * user's subscriptions or payments, then for an unclaimed customer with the
+   * same email. Customers deleted in Stripe are never returned, and a
+   * customer that belongs to a different user is never matched by email.
    */
   async getOrCreateCustomer(
     ctx: ActionCtx,
@@ -335,7 +342,6 @@ export class StripeSubscriptions {
       name?: string;
     },
   ) {
-    // Check the customers table directly by userId (uses by_user_id index)
     const existingByUserId = await ctx.runQuery(
       this.component.public.getCustomerByUserId,
       { userId: args.userId },
@@ -347,13 +353,39 @@ export class StripeSubscriptions {
       };
     }
 
-    // Fallback: check by email (uses by_email index)
+    const existingSubs = await ctx.runQuery(
+      this.component.public.listSubscriptionsByUserId,
+      { userId: args.userId },
+    );
+    const existingPayments = await ctx.runQuery(
+      this.component.public.listPaymentsByUserId,
+      { userId: args.userId },
+    );
+    const linkedCustomerIds = [
+      ...existingSubs.map((subscription) => subscription.stripeCustomerId),
+      ...existingPayments.map((payment) => payment.stripeCustomerId),
+    ];
+    for (const customerId of new Set(linkedCustomerIds)) {
+      if (!customerId) continue;
+      const customer = await ctx.runQuery(this.component.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (!customer?.deleted) {
+        return { customerId, isNew: false };
+      }
+    }
+
     if (args.email) {
       const existingByEmail = await ctx.runQuery(
         this.component.public.getCustomerByEmail,
         { email: args.email },
       );
-      if (existingByEmail) {
+      if (existingByEmail && !existingByEmail.userId) {
+        await this.linkCustomerToUser(
+          ctx,
+          existingByEmail.stripeCustomerId,
+          args.userId,
+        );
         return {
           customerId: existingByEmail.stripeCustomerId,
           isNew: false,
@@ -361,35 +393,46 @@ export class StripeSubscriptions {
       }
     }
 
-    // Check if customer exists by userId in subscriptions
-    const existingSubs = await ctx.runQuery(
-      this.component.public.listSubscriptionsByUserId,
-      { userId: args.userId },
-    );
-
-    if (existingSubs.length > 0) {
-      return { customerId: existingSubs[0].stripeCustomerId, isNew: false };
+    // Concurrent calls for one user share an idempotency key, so they all get
+    // the same customer. Stripe replays a key's response for 24 hours, even
+    // after that customer is deleted. When that happens, move to a key derived
+    // from the deleted customer, which concurrent calls also agree on.
+    let idempotencyKey = args.userId;
+    for (let attempt = 0; attempt < MAX_CREATE_CUSTOMER_ATTEMPTS; attempt++) {
+      const { customerId } = await this.createCustomer(ctx, {
+        email: args.email,
+        name: args.name,
+        metadata: { userId: args.userId },
+        idempotencyKey,
+      });
+      const stored = await ctx.runQuery(this.component.public.getCustomer, {
+        stripeCustomerId: customerId,
+      });
+      if (!stored?.deleted) {
+        return { customerId, isNew: true };
+      }
+      idempotencyKey = `${args.userId}_after_${customerId}`;
     }
-
-    // Check existing payments
-    const existingPayments = await ctx.runQuery(
-      this.component.public.listPaymentsByUserId,
-      { userId: args.userId },
+    throw new Error(
+      `Could not create a Stripe customer for user ${args.userId}: ` +
+        "Stripe kept returning customers that have since been deleted.",
     );
+  }
 
-    if (existingPayments.length > 0 && existingPayments[0].stripeCustomerId) {
-      return { customerId: existingPayments[0].stripeCustomerId, isNew: false };
-    }
-
-    // Create a new customer with idempotency key to prevent race conditions
-    const result = await this.createCustomer(ctx, {
-      email: args.email,
-      name: args.name,
-      metadata: { userId: args.userId },
-      idempotencyKey: args.userId,
+  private async linkCustomerToUser(
+    ctx: ActionCtx,
+    stripeCustomerId: string,
+    userId: string,
+  ) {
+    const customer = await this.stripe().customers.update(stripeCustomerId, {
+      metadata: { userId },
     });
-
-    return { customerId: result.customerId, isNew: true };
+    await ctx.runMutation(this.component.public.createOrUpdateCustomer, {
+      stripeCustomerId,
+      email: customer.email ?? undefined,
+      name: customer.name ?? undefined,
+      metadata: customer.metadata,
+    });
   }
 
   /**

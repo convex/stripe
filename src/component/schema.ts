@@ -8,6 +8,7 @@ export default defineSchema({
     name: v.optional(v.string()),
     metadata: v.optional(v.any()),
     userId: v.optional(v.string()),
+    deleted: v.optional(v.boolean()),
   })
     .index("by_stripe_customer_id", ["stripeCustomerId"])
     .index("by_email", ["email"])
