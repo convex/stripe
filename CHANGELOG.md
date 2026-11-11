@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+First npm release of the 0.2.0 changes below. 0.2.0 was never published: its
+version bump landed before the release workflow, so CI skipped it.
+
 ## 0.2.0
 
 Breaking changes:
