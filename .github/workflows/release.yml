@@ -67,6 +67,11 @@ jobs:
           VERSION=$(git show "$source:package.json" | jq -r .version)
           PREVIOUS_VERSION=$(git show "$source^1:package.json" | jq -r .version)
           export VERSION PREVIOUS_VERSION
+          # Return from the never-published 0.2.1 version to npm's current 0.1.7.
+          if [[ "$VERSION" == 0.1.7 && "$PREVIOUS_VERSION" == 0.2.1 ]]; then
+            echo 'Reset to the published version; no release to stage'
+            exit 0
+          fi
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
           import { appendFileSync } from 'node:fs';
