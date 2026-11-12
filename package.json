@@ -6,7 +6,7 @@
   "bugs": {
     "url": "https://github.com/convex/stripe/issues"
   },
-  "version": "0.2.1",
+  "version": "0.1.7",
   "license": "Apache-2.0",
   "keywords": [
     "convex",
