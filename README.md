@@ -87,6 +87,37 @@ Environment Variables:
 5. Click **"Add endpoint"**
 6. Copy the **Signing secret** and add it as `STRIPE_WEBHOOK_SECRET` in Convex
 
+#### Forwarding events with the Stripe CLI during development
+
+A Dashboard endpoint needs a public URL, so it can't reach a local deployment.
+The [Stripe CLI](https://docs.stripe.com/stripe-cli) can forward your test-mode
+events to the webhook route instead. For a cloud dev deployment, it also means
+one less Dashboard endpoint to keep in sync.
+
+```sh
+stripe listen \
+  --events charge.refunded,checkout.session.async_payment_failed,checkout.session.async_payment_succeeded,checkout.session.completed,customer.created,customer.updated,customer.deleted,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,invoice.created,invoice.finalized,invoice.updated,invoice.paid,invoice.payment_failed,payment_intent.succeeded,refund.failed \
+  --forward-to https://<your-convex-deployment>.convex.site/stripe/webhook
+```
+
+For a local deployment, forward to its site URL instead, such as
+`--forward-to http://127.0.0.1:3211/stripe/webhook`. `npx convex dev` writes
+that URL to `.env.local` as `CONVEX_SITE_URL`, or with your framework's prefix,
+such as `VITE_CONVEX_SITE_URL`.
+
+`--events` takes the events listed above. Add any others that your own
+[webhook handlers](#custom-webhook-handlers) use.
+
+The CLI signs events with its own secret, not the Dashboard endpoint's. Set
+`STRIPE_WEBHOOK_SECRET` to it while you forward events:
+
+```sh
+stripe listen --print-secret | npx convex env set STRIPE_WEBHOOK_SECRET
+```
+
+Each deployment checks one secret, so forward a deployment's events with the CLI
+or send them from a Dashboard endpoint, not both.
+
 ### 5. Register Webhook Routes
 
 Create `convex/http.ts`:
