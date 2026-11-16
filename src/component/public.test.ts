@@ -1780,3 +1780,106 @@ test("payment queries leave out the refund bookkeeping field", async () => {
     await t.query(api.public.listPaymentsByOrgId, { orgId: "org_late" }),
   ).toHaveLength(1);
 });
+
+const proEntitlement = {
+  stripeEntitlementId: "ent_pro",
+  stripeFeatureId: "feat_pro",
+  lookupKey: "pro",
+};
+const exportEntitlement = {
+  stripeEntitlementId: "ent_export",
+  stripeFeatureId: "feat_export",
+  lookupKey: "export",
+};
+
+test("an entitlement summary replaces the customer's entitlements", async () => {
+  const t = convexTest(schema, modules);
+  const has = (lookupKey: string) =>
+    t.query(api.public.hasEntitlement, {
+      stripeCustomerId: "cus_entitled",
+      lookupKey,
+    });
+
+  expect(
+    await t.query(api.public.getEntitlements, {
+      stripeCustomerId: "cus_entitled",
+    }),
+  ).toEqual([]);
+  expect(await has("pro")).toBe(false);
+
+  await t.mutation(api.private.handleEntitlementsUpdated, {
+    stripeCustomerId: "cus_entitled",
+    entitlements: [proEntitlement, exportEntitlement],
+    eventCreated: 1000,
+  });
+  expect(
+    await t.query(api.public.getEntitlements, {
+      stripeCustomerId: "cus_entitled",
+    }),
+  ).toEqual([proEntitlement, exportEntitlement]);
+  expect(await has("pro")).toBe(true);
+  expect(await has("export")).toBe(true);
+
+  // Stripe sends the full list each time, so a missing entitlement was revoked.
+  await t.mutation(api.private.handleEntitlementsUpdated, {
+    stripeCustomerId: "cus_entitled",
+    entitlements: [exportEntitlement],
+    eventCreated: 2000,
+  });
+  expect(await has("pro")).toBe(false);
+  expect(await has("export")).toBe(true);
+
+  // Other customers are unaffected.
+  expect(
+    await t.query(api.public.hasEntitlement, {
+      stripeCustomerId: "cus_other",
+      lookupKey: "export",
+    }),
+  ).toBe(false);
+});
+
+test("entitlement summaries older than the last applied one are ignored", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.mutation(api.private.handleEntitlementsUpdated, {
+    stripeCustomerId: "cus_reordered",
+    entitlements: [],
+    eventCreated: 2000,
+  });
+  await t.mutation(api.private.handleEntitlementsUpdated, {
+    stripeCustomerId: "cus_reordered",
+    entitlements: [proEntitlement],
+    eventCreated: 1000,
+  });
+
+  expect(
+    await t.query(api.public.getEntitlements, {
+      stripeCustomerId: "cus_reordered",
+    }),
+  ).toEqual([]);
+});
+
+test("a deleted customer keeps no entitlements", async () => {
+  const t = convexTest(schema, modules);
+  const entitlements = () =>
+    t.query(api.public.getEntitlements, { stripeCustomerId: "cus_gone" });
+
+  await t.mutation(api.private.handleEntitlementsUpdated, {
+    stripeCustomerId: "cus_gone",
+    entitlements: [proEntitlement],
+    eventCreated: 1000,
+  });
+  await t.mutation(api.private.handleCustomerDeleted, {
+    stripeCustomerId: "cus_gone",
+    eventCreated: 1001,
+  });
+  expect(await entitlements()).toEqual([]);
+
+  // A summary delivered after the deletion can't grant them back.
+  await t.mutation(api.private.handleEntitlementsUpdated, {
+    stripeCustomerId: "cus_gone",
+    entitlements: [proEntitlement],
+    eventCreated: 1002,
+  });
+  expect(await entitlements()).toEqual([]);
+});

@@ -1,6 +1,12 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
-import { internalMutation, mutation, query } from "./_generated/server.js";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server.js";
+import { vEntitlement } from "./schema.js";
 
 // ============================================================================
 // WEBHOOK EVENT LEDGER
@@ -296,6 +302,8 @@ export const handleCustomerDeleted = mutation({
       )
       .unique();
 
+    await clearEntitlements(ctx, args.stripeCustomerId);
+
     if (customer) {
       await ctx.db.patch("customers", customer._id, {
         email: undefined,
@@ -319,6 +327,76 @@ export const handleCustomerDeleted = mutation({
       });
     }
 
+    return null;
+  },
+});
+
+async function getCustomerEntitlements(
+  ctx: MutationCtx,
+  stripeCustomerId: string,
+) {
+  return await ctx.db
+    .query("customer_entitlements")
+    .withIndex("by_stripe_customer_id", (q) =>
+      q.eq("stripeCustomerId", stripeCustomerId),
+    )
+    .unique();
+}
+
+async function clearEntitlements(ctx: MutationCtx, stripeCustomerId: string) {
+  const existing = await getCustomerEntitlements(ctx, stripeCustomerId);
+  if (existing && existing.entitlements.length > 0) {
+    await ctx.db.patch("customer_entitlements", existing._id, {
+      entitlements: [],
+    });
+  }
+}
+
+/**
+ * Store a customer's active entitlements, replacing the previous list. Stripe
+ * sends the whole list each time, so an entitlement missing from it was
+ * revoked.
+ */
+export const handleEntitlementsUpdated = mutation({
+  args: {
+    stripeCustomerId: v.string(),
+    entitlements: v.array(vEntitlement),
+    eventCreated: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const customer = await ctx.db
+      .query("customers")
+      .withIndex("by_stripe_customer_id", (q) =>
+        q.eq("stripeCustomerId", args.stripeCustomerId),
+      )
+      .unique();
+    // Stripe can deliver a summary after the customer's deletion. A deleted
+    // customer has no subscriptions left to grant anything.
+    const entitlements = customer?.deleted ? [] : args.entitlements;
+
+    const existing = await getCustomerEntitlements(ctx, args.stripeCustomerId);
+    if (!existing) {
+      await ctx.db.insert("customer_entitlements", {
+        stripeCustomerId: args.stripeCustomerId,
+        entitlements,
+        lastEventCreated: args.eventCreated,
+      });
+      return null;
+    }
+    if (isStaleEvent(existing.lastEventCreated, args.eventCreated)) {
+      return null;
+    }
+    const patch = {
+      entitlements,
+      lastEventCreated: newestEventCreated(
+        existing.lastEventCreated,
+        args.eventCreated,
+      ),
+    };
+    if (patchChangesDocument(existing, patch)) {
+      await ctx.db.patch("customer_entitlements", existing._id, patch);
+    }
     return null;
   },
 });

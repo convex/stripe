@@ -28,6 +28,7 @@ const FORWARDED_EVENTS = [
   "customer.subscription.created",
   "customer.subscription.updated",
   "customer.subscription.deleted",
+  "entitlements.active_entitlement_summary.updated",
   "invoice.created",
   "invoice.finalized",
   "invoice.updated",

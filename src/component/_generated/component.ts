@@ -90,6 +90,21 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      handleEntitlementsUpdated: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          entitlements: Array<{
+            lookupKey: string;
+            stripeEntitlementId: string;
+            stripeFeatureId: string;
+          }>;
+          eventCreated?: number;
+          stripeCustomerId: string;
+        },
+        null,
+        Name
+      >;
       handleInvoiceCreated: FunctionReference<
         "mutation",
         "internal",
@@ -286,6 +301,17 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         } | null,
         Name
       >;
+      getEntitlements: FunctionReference<
+        "query",
+        "internal",
+        { stripeCustomerId: string },
+        Array<{
+          lookupKey: string;
+          stripeEntitlementId: string;
+          stripeFeatureId: string;
+        }>,
+        Name
+      >;
       getPayment: FunctionReference<
         "query",
         "internal",
@@ -341,6 +367,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           stripeSubscriptionId: string;
           userId?: string;
         } | null,
+        Name
+      >;
+      hasEntitlement: FunctionReference<
+        "query",
+        "internal",
+        { lookupKey: string; stripeCustomerId: string },
+        boolean,
         Name
       >;
       listCheckoutSessions: FunctionReference<
