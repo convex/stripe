@@ -1,6 +1,11 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
-import schema, { vCustomer, vPayment, vSubscription } from "./schema.js";
+import schema, {
+  vCustomer,
+  vEntitlement,
+  vPayment,
+  vSubscription,
+} from "./schema.js";
 
 // ============================================================================
 // VALIDATOR HELPERS
@@ -390,6 +395,46 @@ export const listCheckoutSessions = query({
       args.limit,
     );
     return sessions.map(({ _id, _creationTime, ...data }) => data);
+  },
+});
+
+/**
+ * Get the features a customer is entitled to, as of the newest
+ * `entitlements.active_entitlement_summary.updated` webhook. Returns an empty
+ * list for a customer the component has no summary for.
+ */
+export const getEntitlements = query({
+  args: { stripeCustomerId: v.string() },
+  returns: v.array(vEntitlement),
+  handler: async (ctx, args) => {
+    const summary = await ctx.db
+      .query("customer_entitlements")
+      .withIndex("by_stripe_customer_id", (q) =>
+        q.eq("stripeCustomerId", args.stripeCustomerId),
+      )
+      .unique();
+    return summary?.entitlements ?? [];
+  },
+});
+
+/**
+ * Check whether a customer is entitled to the feature with this lookup key.
+ */
+export const hasEntitlement = query({
+  args: { stripeCustomerId: v.string(), lookupKey: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const summary = await ctx.db
+      .query("customer_entitlements")
+      .withIndex("by_stripe_customer_id", (q) =>
+        q.eq("stripeCustomerId", args.stripeCustomerId),
+      )
+      .unique();
+    return (
+      summary?.entitlements.some(
+        (entitlement) => entitlement.lookupKey === args.lookupKey,
+      ) ?? false
+    );
   },
 });
 

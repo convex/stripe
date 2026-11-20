@@ -17,6 +17,7 @@ requirement.
 - 👥 **Customer Management** - Automatic customer creation and linking
 - 💳 **Customer Portal** - Let users manage their billing
 - 🪑 **Seat-Based Pricing** - Update subscription quantities for team billing
+- 🎫 **Entitlements** - Check which features a customer's subscriptions grant
 - 🔗 **User/Org Linking** - Link payments and subscriptions to users or
   organizations
 - 🔔 **Webhook Handling** - Automatic sync of Stripe data to your Convex
@@ -77,6 +78,7 @@ Environment Variables:
    - `customer.subscription.created`
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
+   - `entitlements.active_entitlement_summary.updated`
    - `invoice.created`
    - `invoice.finalized`
    - `invoice.updated`
@@ -244,6 +246,7 @@ and in `registerRoutes` to control when you upgrade.
 | `reactivateSubscription()`      | Reactivate a subscription set to cancel |
 | `updateSubscriptionQuantity()`  | Update seat count                       |
 | `updateSubscriptionMetadata()`  | Update metadata in Stripe and sync it   |
+| `syncEntitlements()`            | Load a customer's entitlements          |
 
 Stripe is the source of truth for subscription metadata, and webhooks overwrite
 the copy in Convex. Change metadata with
@@ -323,6 +326,56 @@ this on if your auth provider verifies email addresses. Otherwise someone can
 sign up with another person's email and take over their Stripe customer,
 including saved payment methods and invoices.
 
+### Entitlements
+
+With Stripe's [Entitlements](https://docs.stripe.com/billing/entitlements), you
+attach features to products, and Stripe tracks which features each customer's
+subscriptions grant. Add `entitlements.active_entitlement_summary.updated` to
+your webhook endpoint. Stripe sends it whenever a customer's entitlements
+change, and the component stores the customer's full list. Check a feature by
+the lookup key you gave it in Stripe:
+
+```typescript
+import { query } from "./_generated/server";
+import { components } from "./_generated/api";
+import { v } from "convex/values";
+
+export const canExport = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return false;
+
+    const customer = await ctx.runQuery(
+      components.stripe.public.getCustomerByUserId,
+      { userId: identity.subject },
+    );
+    if (!customer) return false;
+
+    return await ctx.runQuery(components.stripe.public.hasEntitlement, {
+      stripeCustomerId: customer.stripeCustomerId,
+      lookupKey: "export",
+    });
+  },
+});
+```
+
+`getEntitlements` returns every feature a customer has, as `lookupKey`,
+`stripeFeatureId`, and `stripeEntitlementId`. The component doesn't store
+feature names or metadata.
+
+The webhook only fires when entitlements change. For customers whose
+entitlements were set before you added the event, load them once from Stripe:
+
+```typescript
+await stripeClient.syncEntitlements(ctx, { stripeCustomerId: "cus_..." });
+```
+
+When a customer has more entitlements than fit in the webhook payload, the
+component reads the full list from Stripe. A restricted `STRIPE_SECRET_KEY`
+needs read access to Entitlements for that and for `syncEntitlements`.
+
 ### Component Queries
 
 Access data directly via the component's public queries:
@@ -363,9 +416,9 @@ export const getUserPayments = query({
 });
 ```
 
-`vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, and `vInvoice`
-match the documents these queries return. Use them in your `returns` validators
-so they stay in sync when the component adds fields.
+`vCustomer`, `vSubscription`, `vCheckoutSession`, `vPayment`, `vInvoice`, and
+`vEntitlement` match the documents these queries return. Use them in your
+`returns` validators so they stay in sync when the component adds fields.
 
 These queries return data for whatever ID you pass, so check that the signed-in
 user is allowed to see it before calling them, as the examples above do with
@@ -373,25 +426,27 @@ user is allowed to see it before calling them, as the examples above do with
 
 ### Available Public Queries
 
-| Query                       | Arguments                 | Description                                     |
-| --------------------------- | ------------------------- | ----------------------------------------------- |
-| `getCustomer`               | `stripeCustomerId`        | Get a customer by Stripe ID                     |
-| `getCustomerByUserId`       | `userId`                  | Newest customer for a user, skipping deleted    |
-| `getCustomerByEmail`        | `email`, `unclaimed?`     | Newest customer with an email, skipping deleted |
-| `getSubscription`           | `stripeSubscriptionId`    | Get a subscription by ID                        |
-| `listSubscriptions`         | `stripeCustomerId`        | List subscriptions for a customer               |
-| `listSubscriptionsByUserId` | `userId`                  | List subscriptions for a user                   |
-| `listSubscriptionsByOrgId`  | `orgId`                   | List subscriptions for an org                   |
-| `getSubscriptionByOrgId`    | `orgId`                   | An org's live subscription, preferring active   |
-| `getPayment`                | `stripePaymentIntentId`   | Get a payment by ID                             |
-| `listPayments`              | `stripeCustomerId`        | List payments for a customer                    |
-| `listPaymentsByUserId`      | `userId`                  | List payments for a user                        |
-| `listPaymentsByOrgId`       | `orgId`                   | List payments for an org                        |
-| `listInvoices`              | `stripeCustomerId`        | List invoices for a customer                    |
-| `listInvoicesByUserId`      | `userId`                  | List invoices for a user                        |
-| `listInvoicesByOrgId`       | `orgId`                   | List invoices for an org                        |
-| `getCheckoutSession`        | `stripeCheckoutSessionId` | Get a completed checkout session by ID          |
-| `listCheckoutSessions`      | `stripeCustomerId`        | List completed checkout sessions for a customer |
+| Query                       | Arguments                       | Description                                     |
+| --------------------------- | ------------------------------- | ----------------------------------------------- |
+| `getCustomer`               | `stripeCustomerId`              | Get a customer by Stripe ID                     |
+| `getCustomerByUserId`       | `userId`                        | Newest customer for a user, skipping deleted    |
+| `getCustomerByEmail`        | `email`, `unclaimed?`           | Newest customer with an email, skipping deleted |
+| `getSubscription`           | `stripeSubscriptionId`          | Get a subscription by ID                        |
+| `listSubscriptions`         | `stripeCustomerId`              | List subscriptions for a customer               |
+| `listSubscriptionsByUserId` | `userId`                        | List subscriptions for a user                   |
+| `listSubscriptionsByOrgId`  | `orgId`                         | List subscriptions for an org                   |
+| `getSubscriptionByOrgId`    | `orgId`                         | An org's live subscription, preferring active   |
+| `getPayment`                | `stripePaymentIntentId`         | Get a payment by ID                             |
+| `listPayments`              | `stripeCustomerId`              | List payments for a customer                    |
+| `listPaymentsByUserId`      | `userId`                        | List payments for a user                        |
+| `listPaymentsByOrgId`       | `orgId`                         | List payments for an org                        |
+| `listInvoices`              | `stripeCustomerId`              | List invoices for a customer                    |
+| `listInvoicesByUserId`      | `userId`                        | List invoices for a user                        |
+| `listInvoicesByOrgId`       | `orgId`                         | List invoices for an org                        |
+| `getCheckoutSession`        | `stripeCheckoutSessionId`       | Get a completed checkout session by ID          |
+| `listCheckoutSessions`      | `stripeCustomerId`              | List completed checkout sessions for a customer |
+| `getEntitlements`           | `stripeCustomerId`              | Features a customer is entitled to              |
+| `hasEntitlement`            | `stripeCustomerId`, `lookupKey` | Whether a customer has a feature                |
 
 Every `list*` query also takes an optional `limit`. Without it, the query
 returns every match, oldest first, which can exceed Convex's read limits for a
@@ -412,26 +467,27 @@ matches, newest first.
 
 The component automatically handles these Stripe webhook events:
 
-| Event                                      | Action                                                       |
-| ------------------------------------------ | ------------------------------------------------------------ |
-| `customer.created`                         | Creates customer record                                      |
-| `customer.updated`                         | Updates or creates customer record                           |
-| `customer.deleted`                         | Scrubs customer PII and marks it deleted                     |
-| `customer.subscription.created`            | Creates subscription record                                  |
-| `customer.subscription.updated`            | Updates or creates subscription record                       |
-| `customer.subscription.deleted`            | Marks subscription as canceled                               |
-| `payment_intent.succeeded`                 | Creates payment record, skipping subscription payments       |
-| `charge.refunded`                          | Records the refunded amount on the payment                   |
-| `refund.failed`                            | Re-reads the refunded amount when a refund fails             |
-| `invoice.created`                          | Creates invoice record                                       |
-| `invoice.finalized`                        | Upserts invoice record                                       |
-| `invoice.updated`                          | Upserts invoice record, including metadata changes           |
-| `invoice.paid`                             | Upserts invoice as paid                                      |
-| `invoice.payment_succeeded`                | Upserts invoice record                                       |
-| `invoice.payment_failed`                   | Keeps the invoice `open`; never downgrades a paid invoice    |
-| `checkout.session.completed`               | Records the session and syncs its first subscription invoice |
-| `checkout.session.async_payment_succeeded` | Marks the session's delayed payment as paid                  |
-| `checkout.session.async_payment_failed`    | Keeps the session's delayed payment unpaid                   |
+| Event                                             | Action                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------ |
+| `customer.created`                                | Creates customer record                                      |
+| `customer.updated`                                | Updates or creates customer record                           |
+| `customer.deleted`                                | Scrubs customer PII and marks it deleted                     |
+| `customer.subscription.created`                   | Creates subscription record                                  |
+| `customer.subscription.updated`                   | Updates or creates subscription record                       |
+| `customer.subscription.deleted`                   | Marks subscription as canceled                               |
+| `payment_intent.succeeded`                        | Creates payment record, skipping subscription payments       |
+| `charge.refunded`                                 | Records the refunded amount on the payment                   |
+| `refund.failed`                                   | Re-reads the refunded amount when a refund fails             |
+| `invoice.created`                                 | Creates invoice record                                       |
+| `invoice.finalized`                               | Upserts invoice record                                       |
+| `invoice.updated`                                 | Upserts invoice record, including metadata changes           |
+| `invoice.paid`                                    | Upserts invoice as paid                                      |
+| `invoice.payment_succeeded`                       | Upserts invoice record                                       |
+| `invoice.payment_failed`                          | Keeps the invoice `open`; never downgrades a paid invoice    |
+| `checkout.session.completed`                      | Records the session and syncs its first subscription invoice |
+| `checkout.session.async_payment_succeeded`        | Marks the session's delayed payment as paid                  |
+| `checkout.session.async_payment_failed`           | Keeps the session's delayed payment unpaid                   |
+| `entitlements.active_entitlement_summary.updated` | Replaces the customer's stored entitlements                  |
 
 `refund.updated` and `charge.refund.updated` are handled the same way as
 `refund.failed` when they report a failed or canceled refund.
@@ -445,11 +501,11 @@ component handles both:
   logs that it skipped them. A daily cron deletes entries after 30 days.
 - If the same event arrives twice at once, only one delivery runs. The other
   gets a 409, so Stripe retries it and then finds the event processed.
-- Customers and subscriptions store the `created` time of the newest event
-  applied to them in `lastEventCreated`, and older events for the same object
-  are ignored. The public queries don't return that field. A canceled
-  subscription is never moved back to another status, including one whose
-  deletion arrived before the component had stored it.
+- Customers, subscriptions, and entitlements store the `created` time of the
+  newest event applied to them in `lastEventCreated`, and older events for the
+  same object are ignored. The public queries don't return that field. A
+  canceled subscription is never moved back to another status, including one
+  whose deletion arrived before the component had stored it.
 
 A handler can still run more than once for an event. If it throws, or the route
 fails after it ran, Stripe redelivers the event and every handler runs again. So
@@ -644,6 +700,17 @@ you need to react to chargebacks.
 | `orgId`                | string? | Linked org ID     |
 | `metadata`             | object? | Invoice metadata  |
 
+### customer_entitlements
+
+| Field              | Type    | Description                                           |
+| ------------------ | ------- | ----------------------------------------------------- |
+| `stripeCustomerId` | string  | Customer ID                                           |
+| `entitlements`     | array   | `stripeEntitlementId`, `stripeFeatureId`, `lookupKey` |
+| `lastEventCreated` | number? | `created` time of the newest summary synced           |
+
+Each summary replaces the whole list, so a feature missing from it was revoked.
+When Stripe deletes a customer, the component clears its entitlements.
+
 ### webhook_events
 
 | Field           | Type     | Description                               |
@@ -723,7 +790,8 @@ Check the Convex logs in your dashboard for errors. Common issues:
   `https://<deployment>.convex.site/stripe/webhook`)
 - Missing events in webhook configuration
 - A restricted `STRIPE_SECRET_KEY` that can't read invoices, invoice payments,
-  subscriptions, or charges. The webhook route looks these up in Stripe.
+  subscriptions, charges, or entitlements. The webhook route looks these up in
+  Stripe.
 - A 409 means the same event was delivered twice at once. Stripe retries it and
   the retry succeeds.
 

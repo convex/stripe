@@ -348,6 +348,58 @@ describe("webhook route on a real Convex backend", () => {
     });
   });
 
+  test("replaces a customer's entitlements and ignores an older summary", async () => {
+    const customerId = uniqueId("cus");
+    const createdAt = nowSeconds() - 60;
+    const summary = (lookupKeys: string[]) => ({
+      object: "entitlements.active_entitlement_summary",
+      customer: customerId,
+      livemode: false,
+      entitlements: {
+        object: "list",
+        data: lookupKeys.map((lookupKey) => ({
+          id: `ent_${lookupKey}`,
+          object: "entitlements.active_entitlement",
+          feature: `feat_${lookupKey}`,
+          livemode: false,
+          lookup_key: lookupKey,
+        })),
+        has_more: false,
+        url: `/v1/customer/${customerId}/entitlements`,
+      },
+    });
+    const send = (lookupKeys: string[], created: number) =>
+      deliver(
+        stripeEvent(
+          "entitlements.active_entitlement_summary.updated",
+          summary(lookupKeys),
+          { created },
+        ),
+      );
+    const lookupKeys = async () =>
+      (
+        (await runComponent<{ lookupKey: string }[]>("public:getEntitlements", {
+          stripeCustomerId: customerId,
+        })) ?? []
+      ).map((entitlement) => entitlement.lookupKey);
+
+    expect((await send(["pro", "export"], createdAt)).status).toBe(200);
+    expect(await lookupKeys()).toEqual(["pro", "export"]);
+
+    expect((await send(["export"], createdAt + 20)).status).toBe(200);
+    expect(await lookupKeys()).toEqual(["export"]);
+    expect(
+      await runComponent<boolean>("public:hasEntitlement", {
+        stripeCustomerId: customerId,
+        lookupKey: "pro",
+      }),
+    ).toBe(false);
+
+    // A delayed delivery of an earlier summary doesn't restore "pro".
+    expect((await send(["pro", "export"], createdAt + 10)).status).toBe(200);
+    expect(await lookupKeys()).toEqual(["export"]);
+  });
+
   test("reads the period end from the subscription when its item has none", async () => {
     const userId = uniqueId("user");
     const subscriptionId = uniqueId("sub");

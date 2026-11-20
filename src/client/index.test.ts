@@ -18,6 +18,7 @@ const stripeMocks = vi.hoisted(() => ({
   constructEvent: vi.fn(),
   createCustomer: vi.fn(),
   updateCustomer: vi.fn(),
+  listActiveEntitlements: vi.fn(),
 }));
 
 vi.mock("stripe", () => ({
@@ -42,6 +43,11 @@ vi.mock("stripe", () => ({
         checkout: {
           sessions: {
             create: stripeMocks.createCheckoutSession,
+          },
+        },
+        entitlements: {
+          activeEntitlements: {
+            list: stripeMocks.listActiveEntitlements,
           },
         },
       };
@@ -1542,5 +1548,187 @@ describe("review fixes for 0.2.0", () => {
       components.stripe.public.getCustomerByEmail,
       { email: "shared@example.com", unclaimed: true },
     );
+  });
+});
+
+describe("entitlements", () => {
+  const processEvent = (clientModule as any).processEvent;
+
+  function activeEntitlement(lookupKey: string) {
+    return {
+      id: `ent_${lookupKey}`,
+      object: "entitlements.active_entitlement",
+      feature: `feat_${lookupKey}`,
+      livemode: false,
+      lookup_key: lookupKey,
+    };
+  }
+
+  // Stripe's list call returns a promise that is also async iterable, and
+  // `for await` pages through every result.
+  async function* pages(...entitlements: object[]) {
+    yield* entitlements;
+  }
+
+  function summaryEvent(entitlements: object[], hasMore: boolean) {
+    return {
+      id: "evt_entitlements",
+      type: "entitlements.active_entitlement_summary.updated",
+      created: 1_700_000_500,
+      data: {
+        object: {
+          object: "entitlements.active_entitlement_summary",
+          customer: "cus_entitled",
+          livemode: false,
+          entitlements: {
+            object: "list",
+            data: entitlements,
+            has_more: hasMore,
+            url: "/v1/customer/cus_entitled/entitlements",
+          },
+        },
+      },
+    };
+  }
+
+  test("a complete summary is stored from the payload without calling Stripe", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const stripe = { entitlements: { activeEntitlements: { list: vi.fn() } } };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      summaryEvent(
+        [activeEntitlement("pro"), activeEntitlement("export")],
+        false,
+      ),
+      stripe,
+    );
+
+    expect(stripe.entitlements.activeEntitlements.list).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      components.stripe.private.handleEntitlementsUpdated,
+      {
+        stripeCustomerId: "cus_entitled",
+        entitlements: [
+          {
+            stripeEntitlementId: "ent_pro",
+            stripeFeatureId: "feat_pro",
+            lookupKey: "pro",
+          },
+          {
+            stripeEntitlementId: "ent_export",
+            stripeFeatureId: "feat_export",
+            lookupKey: "export",
+          },
+        ],
+        eventCreated: 1_700_000_500,
+      },
+    );
+  });
+
+  test("a summary with more entitlements than the payload holds reads all of them from Stripe", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+    const all = Array.from({ length: 12 }, (_, i) =>
+      activeEntitlement(`feature_${i}`),
+    );
+    const list = vi.fn().mockReturnValue(pages(...all));
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      summaryEvent(all.slice(0, 10), true),
+      { entitlements: { activeEntitlements: { list } } },
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      customer: "cus_entitled",
+      limit: 100,
+    });
+    const stored = ctx.runMutation.mock.calls[0][1];
+    expect(stored.entitlements).toHaveLength(12);
+    expect(stored.entitlements[11]).toEqual({
+      stripeEntitlementId: "ent_feature_11",
+      stripeFeatureId: "feat_feature_11",
+      lookupKey: "feature_11",
+    });
+    expect(stored.eventCreated).toBe(1_700_000_500);
+  });
+
+  test("an expanded feature is stored by its ID", async () => {
+    const ctx = { runMutation: vi.fn(), runQuery: vi.fn() };
+
+    await processEvent(
+      ctx,
+      components.stripe,
+      summaryEvent(
+        [
+          {
+            ...activeEntitlement("pro"),
+            feature: { id: "feat_pro", object: "entitlements.feature" },
+          },
+        ],
+        false,
+      ),
+      {},
+    );
+
+    expect(ctx.runMutation.mock.calls[0][1].entitlements).toEqual([
+      {
+        stripeEntitlementId: "ent_pro",
+        stripeFeatureId: "feat_pro",
+        lookupKey: "pro",
+      },
+    ]);
+  });
+
+  test("syncEntitlements reads a customer's entitlements from Stripe and stores them", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(1_800_000_000_000);
+      stripeMocks.listActiveEntitlements.mockReset();
+      stripeMocks.listActiveEntitlements.mockImplementation(() => {
+        // The read takes a minute.
+        vi.setSystemTime(1_800_000_060_000);
+        return pages(activeEntitlement("pro"));
+      });
+      const ctx = {
+        runMutation: vi.fn(),
+        runQuery: vi.fn(),
+        runAction: vi.fn(),
+      };
+      const client = new StripeSubscriptions(components.stripe, {
+        STRIPE_SECRET_KEY: "sk_test_123",
+      });
+
+      const entitlements = await client.syncEntitlements(ctx, {
+        stripeCustomerId: "cus_backfill",
+      });
+
+      expect(stripeMocks.listActiveEntitlements).toHaveBeenCalledWith({
+        customer: "cus_backfill",
+        limit: 100,
+      });
+      const expected = [
+        {
+          stripeEntitlementId: "ent_pro",
+          stripeFeatureId: "feat_pro",
+          lookupKey: "pro",
+        },
+      ];
+      expect(entitlements).toEqual(expected);
+      // The list is stamped with the time the read started, so a webhook
+      // created while the read was in flight still applies after it.
+      expect(ctx.runMutation).toHaveBeenCalledWith(
+        components.stripe.private.handleEntitlementsUpdated,
+        {
+          stripeCustomerId: "cus_backfill",
+          entitlements: expected,
+          eventCreated: 1_800_000_000,
+        },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
