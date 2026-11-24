@@ -17,6 +17,7 @@ import type {
 import type { ComponentApi } from "../component/_generated/component.js";
 import schema, {
   vCustomer,
+  vEntitlement,
   vPayment,
   vSubscription,
 } from "../component/schema.js";
@@ -42,7 +43,7 @@ export type {
 };
 
 /** Validators for the documents the component's queries return. */
-export { vCustomer, vPayment, vSubscription };
+export { vCustomer, vEntitlement, vPayment, vSubscription };
 export const vCheckoutSession = schema.tables.checkout_sessions.validator;
 export const vInvoice = schema.tables.invoices.validator;
 
@@ -489,6 +490,32 @@ export class StripeSubscriptions {
   }
 
   // ============================================================================
+  // ENTITLEMENTS
+  // ============================================================================
+
+  /**
+   * Read a customer's active entitlements from Stripe and store them.
+   *
+   * The `entitlements.active_entitlement_summary.updated` webhook keeps them in
+   * sync, but only once a customer's entitlements change. Call this to load
+   * customers whose entitlements were set before you added that event.
+   */
+  async syncEntitlements(ctx: ActionCtx, args: { stripeCustomerId: string }) {
+    // Taken before the read, so a webhook created while it is in flight can
+    // still replace the result.
+    const readStarted = Math.floor(Date.now() / 1000);
+    const entitlements = (
+      await listActiveEntitlements(this.stripe(), args.stripeCustomerId)
+    ).map(toEntitlement);
+    await ctx.runMutation(this.component.private.handleEntitlementsUpdated, {
+      stripeCustomerId: args.stripeCustomerId,
+      entitlements,
+      eventCreated: readStarted,
+    });
+    return entitlements;
+  }
+
+  // ============================================================================
   // WEBHOOK REGISTRATION
   // ============================================================================
 }
@@ -921,9 +948,43 @@ export async function processEvent(
       break;
     }
 
+    case "entitlements.active_entitlement_summary.updated": {
+      const summary = event.data.object;
+      // When the payload holds only part of the list, read all of it from
+      // Stripe. That copy is at least as new as this event.
+      const entitlements = summary.entitlements.has_more
+        ? await listActiveEntitlements(stripe, summary.customer)
+        : summary.entitlements.data;
+      await ctx.runMutation(component.private.handleEntitlementsUpdated, {
+        stripeCustomerId: summary.customer,
+        entitlements: entitlements.map(toEntitlement),
+        eventCreated: event.created,
+      });
+      break;
+    }
+
     default:
       console.log(`ℹ️ Unhandled event type: ${event.type}`);
   }
+}
+
+async function listActiveEntitlements(stripe: StripeSDK, customer: string) {
+  const entitlements: StripeSDK.Entitlements.ActiveEntitlement[] = [];
+  for await (const entitlement of stripe.entitlements.activeEntitlements.list({
+    customer,
+    limit: 100,
+  })) {
+    entitlements.push(entitlement);
+  }
+  return entitlements;
+}
+
+function toEntitlement(entitlement: StripeSDK.Entitlements.ActiveEntitlement) {
+  return {
+    stripeEntitlementId: entitlement.id,
+    stripeFeatureId: getStripeObjectId(entitlement.feature),
+    lookupKey: entitlement.lookup_key,
+  };
 }
 
 async function syncInvoice(

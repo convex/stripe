@@ -1,6 +1,14 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+/** A feature a customer is entitled to, from Stripe's Entitlements API. */
+export const vEntitlement = v.object({
+  stripeEntitlementId: v.string(),
+  stripeFeatureId: v.string(),
+  // The feature's `lookup_key`, which you choose when you create the feature
+  lookupKey: v.string(),
+});
+
 const schema = defineSchema({
   customers: defineTable({
     stripeCustomerId: v.string(),
@@ -89,6 +97,14 @@ const schema = defineSchema({
     .index("by_stripe_subscription_id", ["stripeSubscriptionId"])
     .index("by_org_id", ["orgId"])
     .index("by_user_id", ["userId"]),
+  // One document per customer. Stripe sends the full list of a customer's
+  // active entitlements whenever it changes, and each one replaces the last.
+  customer_entitlements: defineTable({
+    stripeCustomerId: v.string(),
+    entitlements: v.array(vEntitlement),
+    // Stripe `event.created` (seconds) of the newest summary applied
+    lastEventCreated: v.optional(v.number()),
+  }).index("by_stripe_customer_id", ["stripeCustomerId"]),
   webhook_events: defineTable({
     stripeEventId: v.string(),
     type: v.string(),
